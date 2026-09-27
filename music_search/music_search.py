@@ -34,6 +34,13 @@ _EXTRA = str.maketrans({"ł": "l", "ø": "o", "æ": "ae", "ß": "ss", "đ": "d"}
 log = logging.getLogger("music_search")
 
 
+def name_score(query: str, choice: str, **_kwargs) -> float:
+    """Name similarity without WRatio's partial matching, which lets a short name hide inside a
+    longer query ("Zenek Martyniuk" scored 75 against "Martyr"). A query that is a whole-word
+    subset of the name ("Manson") still scores high."""
+    return max(fuzz.ratio(query, choice), fuzz.token_sort_ratio(query, choice), 0.95 * fuzz.token_set_ratio(query, choice))
+
+
 def norm(text: str) -> str:
     """Lowercase, strip diacritics and punctuation, so STT output and tags compare equal."""
     text = unicodedata.normalize("NFKD", text.lower().translate(_EXTRA))
@@ -76,7 +83,7 @@ class Index:
 
     def find_artists(self, query: str, limit: int) -> list[tuple[dict, float]]:
         best: dict[int, float] = {}
-        hits = process.extract(norm(query), self.artist_keys, scorer=fuzz.WRatio, processor=None, limit=limit * 4)
+        hits = process.extract(norm(query), self.artist_keys, scorer=name_score, processor=None, limit=limit * 4)
         for _key, score, pos in hits:
             i = self.artist_of_key[pos]
             best[i] = max(best.get(i, 0), score)

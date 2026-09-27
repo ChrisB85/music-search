@@ -56,6 +56,11 @@ class SearchTest(unittest.TestCase):
     def test_bare_artist_beats_their_tracks(self):
         self.assertEqual(self.best("Merlin Manson")["type"], "artist")
 
+    def test_short_name_inside_unknown_artist(self):
+        # Regression: WRatio gave "Zenek Martyniuk" 75 against "Martyr" and played it.
+        ix = Index({"artist": [artist("Martyr", 9)]}, {})
+        self.assertLess(ix.search("Zenek Martyniuk", "", "artist")[0]["score"], 75)
+
     def test_duplicate_tracks_collapsed(self):
         hits = self.ix.search("Paranoid", "Black Sabbath", "track", 5)
         self.assertEqual(sum(h["name"] == "Paranoid" for h in hits), 1)
