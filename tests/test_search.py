@@ -18,11 +18,12 @@ def item(kind, name, by, n):
 
 LIBRARY = {
     "artist": [artist("Marilyn Manson", 1), artist("Black Sabbath", 2), artist("Type O Negative", 3),
-               artist("Iron Maiden", 4), artist("Metallica", 5)],
+               artist("Iron Maiden", 4), artist("Metallica", 5), artist("Rammstein", 6)],
     "album": [item("album", "Paranoid", "Black Sabbath", 1), item("album", "Antichrist Superstar", "Marilyn Manson", 2)],
     "track": [item("track", "Paranoid", "Black Sabbath", 1), item("track", "Paranoid", "Black Sabbath", 2),
               item("track", "Paranoid", "Type O Negative", 3), item("track", "I", "Black Sabbath", 4),
-              item("track", "Enter Sandman", "Metallica", 5)],
+              item("track", "Enter Sandman", "Metallica", 5), item("track", "Zerstören", "Rammstein", 6),
+              item("track", "Sonne (live)", "Rammstein", 7)],
 }
 ALIASES = {"Iron Maiden": ["Ajron Mejden"]}
 
@@ -60,6 +61,13 @@ class SearchTest(unittest.TestCase):
     def test_one_string_query(self):
         hit = self.best("Paranoid Black Sabbath")
         self.assertEqual((hit["name"], hit["artist"]), ("Paranoid", "Black Sabbath"))
+
+    def test_short_title_not_matched_inside_longer(self):
+        # Regression: "Razer" (STT for "Reise, Reise") played "Zerstören".
+        self.assertLess(self.best("Razer", "Rammstein", "track")["score"], 75)
+
+    def test_title_suffix_ignored(self):
+        self.assertEqual(self.best("Sonne", "Rammstein", "track")["score"], 100.0)
 
     def test_bare_artist_beats_their_tracks(self):
         self.assertEqual(self.best("Merlin Manson")["type"], "artist")

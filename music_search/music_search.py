@@ -68,6 +68,11 @@ def spoken_name(transcript: str) -> str:
     return _COMMAND.match(text).group(1).strip() if text else ""
 
 
+def base_title(title: str) -> str:
+    """Title without "(live …)", "[remaster]" or " - suffix", for matching the bare spoken title."""
+    return norm(re.sub(r"\s*[\(\[].*?[\)\]]", "", title).split(" - ")[0])
+
+
 def norm(text: str) -> str:
     """Lowercase, strip diacritics and punctuation, so STT output and tags compare equal."""
     text = unicodedata.normalize("NFKD", text.lower().translate(_EXTRA))
@@ -100,6 +105,7 @@ class Index:
         self.items: dict[str, list[dict]] = {}
         self.titles: dict[str, list[str]] = {}
         self.full: dict[str, list[str]] = {}
+        self.bare: dict[str, list[str]] = {}
         for kind in ("album", "track"):
             rows, seen = [], set()
             for item in library.get(kind, []):
@@ -123,6 +129,7 @@ class Index:
                         titles.append(alias)
             self.items[kind] = rows
             self.titles[kind] = [norm(t) for t in titles]
+            self.bare[kind] = [base_title(t) or norm(t) for t in titles]
             self.full[kind] = [norm(f"{t} {r['artist']}") for t, r in zip(titles, rows)]
 
     def find_artists(self, query: str, limit: int) -> list[tuple[dict, float]]:
@@ -149,7 +156,10 @@ class Index:
                 pool = [(i, names[norm(r["artist"])]) for i, r in enumerate(self.items[k]) if norm(r["artist"]) in names]
                 q = norm(query)
                 for i, artist_score in pool:
-                    score = 0.7 * fuzz.WRatio(q, self.titles[k][i], processor=None) + 0.3 * artist_score
+                    # Same scorer as artist names: WRatio's partial match let "razer" score 68 against
+                    # "Zerstören" and play it. Also compare the bare title, so "Sonne" hits "Sonne (live)".
+                    title_score = max(name_score(q, self.titles[k][i]), name_score(q, self.bare[k][i]))
+                    score = 0.7 * title_score + 0.3 * artist_score
                     found.append(dict(self.items[k][i], score=score))
             else:
                 # One string like "paranoid black sabbath": match "title artist", but the title itself
