@@ -74,7 +74,7 @@
   <h1>Zapisy fonetyczne</h1>
   <p class="lead">Jak rozpoznawanie mowy zapisuje nazwy artystów. Wyszukiwanie muzyki traktuje każdy zapis jak nazwę artysty. Zmiany działają od razu.</p>
 
-  <p class="hint" id="hint">Przycisk mikrofonu przy artyście nagrywa zapis przez to samo rozpoznawanie mowy, którego używa asystent. Mów tak jak do niego, np. „Puść Judas Priest” — polecenie zostanie obcięte, zostanie sama nazwa. Kliknij drugi raz, żeby zakończyć.</p>
+  <p class="hint" id="hint">Przycisk mikrofonu przy artyście nagrywa zapis przez to samo rozpoznawanie mowy, którego używa asystent. Mów tak jak do niego, np. „Puść Judas Priest” — polecenie zostanie obcięte, a sama nazwa zapisze się od razu. Kliknij drugi raz, żeby zakończyć. Zły zapis usuniesz krzyżykiem.</p>
 
   <section id="misses-section">
     <h2>Nietrafione zapytania</h2>
@@ -151,7 +151,12 @@ function row(artist) {
   const mic = el("button", { type: "button", className: "mic", title: "Nagraj zapis głosem" });
   mic.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>';
   mic.setAttribute("aria-label", `Nagraj zapis dla ${artist}`);
-  mic.onclick = () => record(mic, input);
+  mic.onclick = () => record(mic, async (text, transcript) => {
+    if (await save(artist, [...(aliases[artist] || []), text])) {
+      render();
+      toast(`Zapisano „${text}” przy ${artist} (usłyszane: „${transcript}”).`);
+    }
+  });
   input.onkeydown = async e => {
     if (e.key !== "Enter" || !input.value.trim()) return;
     if (await save(artist, [...list, input.value.trim()])) render(artist);
@@ -181,7 +186,7 @@ function render(focusArtist) {
 // Microphone: 16 kHz mono PCM straight from Web Audio, sent to the app, which forwards it to HA STT.
 let recording = null;
 
-async function record(button, input) {
+async function record(button, onText) {
   if (recording) { recording.stop(); return; }
   if (!navigator.mediaDevices?.getUserMedia) {
     toast("Mikrofon działa tylko przez HTTPS, np. https://ha.aqq1.pl.", true);
@@ -220,9 +225,7 @@ async function record(button, input) {
         const r = await fetch("api/stt", { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: pcm.buffer });
         const data = await r.json();
         if (!r.ok) { toast(data.error || "Rozpoznawanie mowy nie powiodło się.", true); return; }
-        input.value = data.text;
-        input.focus();
-        toast(`Usłyszane: „${data.transcript}”. Enter zapisuje.`);
+        await onText(data.text, data.transcript);
       } catch {
         toast("Rozpoznawanie mowy nie powiodło się.", true);
       } finally {
