@@ -41,6 +41,7 @@ class SearchTest(unittest.TestCase):
         self.assertEqual(spoken_name("Puść Judas Priest w pokoju."), "Judas Priest")
         self.assertEqual(spoken_name("Metalikę"), "Metalikę")
         self.assertEqual(spoken_name("włącz Dżudas Prista"), "Dżudas Prista")
+        self.assertEqual(spoken_name("Puść album Paranoid w pokoju"), "Paranoid")
 
     def test_inflected_artist(self):
         self.assertEqual(self.best("Marlina Mansona")["name"], "Marilyn Manson")
@@ -121,6 +122,19 @@ class AliasEditTest(unittest.TestCase):
 
     def test_unknown_artist_rejected(self):
         self.assertIn("error", self.svc.add_alias("Zenek Martyniuk", "Zenek"))
+
+    def test_album_alias(self):
+        self.svc.album_aliases_file = os.path.join(os.path.dirname(self.svc.aliases_file), "album_aliases.yaml")
+        result = self.svc.add_alias("Marlin Manson", "Antykrajst Superstar", album="Antichrist Superstar")
+        self.assertEqual((result["album"], result["artist"]), ("Antichrist Superstar", "Marilyn Manson"))
+        hit = self.svc.index.search("Antykrajst Superstar", "Marilyn Manson", "album")[0]
+        self.assertEqual((hit["name"], hit["score"]), ("Antichrist Superstar", 100.0))
+        # the alias row must not show up as a second result for the same album
+        hits = self.svc.index.search("Antichrist Superstar", "Marilyn Manson", "album", 5)
+        self.assertEqual(sum(h["name"] == "Antichrist Superstar" for h in hits), 1)
+
+    def test_unknown_album_rejected(self):
+        self.assertIn("error", self.svc.set_album_aliases("Metallica", "Nie Ma Takiego", ["x"]))
 
     def test_duplicate_alias_not_added_twice(self):
         self.svc.add_alias("Iron Maiden", "Ajron Mejden")

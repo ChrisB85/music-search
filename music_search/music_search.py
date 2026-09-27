@@ -30,6 +30,10 @@ PORT = int(os.environ.get("PORT", "8098"))
 
 TYPES = ("artist", "album", "track")
 EDITOR_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "editor.html")
+ALBUM_ALIASES_HEADER = """\
+# Phonetic spellings of album titles, per artist then album (names exactly as in the library).
+# Edited by the app's editor panel and by the voice agent; hand edits apply without a restart.
+"""
 ALIASES_HEADER = """\
 # Phonetic spellings per Music Assistant artist, as Polish speech-to-text may write them.
 # Key = artist name exactly as in the library. Edited by the app's editor panel and by the
@@ -50,7 +54,9 @@ def name_score(query: str, choice: str, **_kwargs) -> float:
 
 # The editor asks to speak the name the way one talks to the assistant ("Puść Judas Priest w pokoju"),
 # so the transcript keeps the inflection STT really produces; strip the command words around it.
-_COMMAND = re.compile(r"^(?:(?:puść|pusc|włącz|wlacz|zagraj|odtwórz|odtworz)\s+)?(.*?)(?:\s+w\s+pokoju)?$", re.I)
+_COMMAND = re.compile(
+    r"^(?:(?:puść|pusc|włącz|wlacz|zagraj|odtwórz|odtworz)\s+)?(?:(?:album|płytę|plyte)\s+)?(.*?)(?:\s+w\s+pokoju)?$", re.I
+)
 
 
 def spoken_name(transcript: str) -> str:
@@ -68,7 +74,12 @@ def norm(text: str) -> str:
 class Index:
     """In-memory library index. Pure: no I/O, so tests can build it from fixtures."""
 
-    def __init__(self, library: dict[str, list[dict]], aliases: dict[str, list[str]]):
+    def __init__(
+        self,
+        library: dict[str, list[dict]],
+        aliases: dict[str, list[str]],
+        album_aliases: dict[str, dict[str, list[str]]] | None = None,
+    ):
         alias_map = {norm(k): v or [] for k, v in (aliases or {}).items()}
         # Artist choice keys: the name plus every alias, all pointing at the same artist.
         self.artists: list[dict] = []
@@ -94,9 +105,21 @@ class Index:
                     continue
                 seen.add(dedupe)
                 rows.append({"type": kind, "name": item["name"], "artist": artist, "uri": item["uri"]})
+            titles = [r["name"] for r in rows]
+            if kind == "album":
+                # An album alias is one more row with the same item, matched under the spoken title.
+                spoken = {
+                    (norm(artist), norm(album)): names
+                    for artist, albums in (album_aliases or {}).items()
+                    for album, names in (albums or {}).items()
+                }
+                for r in list(rows):
+                    for alias in spoken.get((norm(r["artist"]), norm(r["name"])), []) or []:
+                        rows.append(r)
+                        titles.append(alias)
             self.items[kind] = rows
-            self.titles[kind] = [norm(r["name"]) for r in rows]
-            self.full[kind] = [norm(f"{r['name']} {r['artist']}") for r in rows]
+            self.titles[kind] = [norm(t) for t in titles]
+            self.full[kind] = [norm(f"{t} {r['artist']}") for t, r in zip(titles, rows)]
 
     def find_artists(self, query: str, limit: int) -> list[tuple[dict, float]]:
         best: dict[int, float] = {}
@@ -135,6 +158,12 @@ class Index:
                     # Very short titles ("I", "15") would partially match almost anything.
                     title_score = fuzz.partial_ratio(title, q) if len(title) >= 4 else 100 * (title in words)
                     found.append(dict(self.items[k][i], score=min(score, title_score)))
+        best: dict[tuple[str, str], dict] = {}
+        for r in found:  # an item matched under its title and an alias: keep the better score
+            key = (r["type"], r["uri"])
+            if key not in best or r["score"] > best[key]["score"]:
+                best[key] = r
+        found = list(best.values())
         # Ties: prefer artist over album over track (a bare name usually means the artist).
         found.sort(key=lambda r: (-round(r["score"], 1), TYPES.index(r["type"])))
         return [dict(r, score=round(r["score"], 1)) for r in found[:limit]]
@@ -151,11 +180,12 @@ class Service:
         # person entity -> Music Assistant user; each user sees only their own libraries.
         self.users = {u["person"]: u["ma_user"] for u in options.get("users", [])}
         self.aliases_file = os.path.join(CONFIG_DIR, "aliases.yaml")
+        self.album_aliases_file = os.path.join(CONFIG_DIR, "album_aliases.yaml")
         self.misses_file = os.path.join(CONFIG_DIR, "misses.log")
         # Keyed by MA user; "" = every library (no username passed to Music Assistant).
         self.libraries: dict[str, dict[str, list[dict]]] = {}
         self.indexes: dict[str, Index] = {"": Index({}, {})}
-        self.aliases_mtime = 0.0
+        self.mtimes: dict[str, float] = {}
         self.lock = threading.Lock()
         self.write_lock = threading.Lock()
 
@@ -173,12 +203,24 @@ class Service:
         with urllib.request.urlopen(req, timeout=120) as resp:
             return json.load(resp)
 
-    def load_aliases(self) -> dict:
-        if not os.path.exists(self.aliases_file):
+    def load_yaml(self, path: str) -> dict:
+        if not os.path.exists(path):
             return {}
-        self.aliases_mtime = os.path.getmtime(self.aliases_file)
-        with open(self.aliases_file, encoding="utf-8") as f:
+        self.mtimes[path] = os.path.getmtime(path)
+        with open(path, encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
+
+    def load_aliases(self) -> dict:
+        return self.load_yaml(self.aliases_file)
+
+    def load_album_aliases(self) -> dict:
+        return self.load_yaml(self.album_aliases_file)
+
+    def files_changed(self) -> bool:
+        return any(
+            os.path.exists(p) and os.path.getmtime(p) != self.mtimes.get(p)
+            for p in (self.aliases_file, self.album_aliases_file)
+        )
 
     def refresh(self) -> None:
         entry = self.ha("GET", "/config/config_entries/entry?domain=music_assistant")[0]["entry_id"]
@@ -198,23 +240,46 @@ class Service:
         self.rebuild()
 
     def rebuild(self) -> None:
-        aliases = self.load_aliases()
-        indexes = {user: Index(library, aliases) for user, library in self.libraries.items()}
+        aliases, album_aliases = self.load_aliases(), self.load_album_aliases()
+        indexes = {user: Index(library, aliases, album_aliases) for user, library in self.libraries.items()}
         with self.lock:
             self.indexes = indexes
 
     def artist_names(self) -> list[str]:
         return sorted({a["name"] for a in self.libraries.get("", {}).get("artist", [])}, key=str.lower)
 
+    def albums(self) -> list[tuple[str, str]]:
+        """(album, artist) pairs, artist being the joined artist string the index uses."""
+        pairs = {
+            (a["name"], ", ".join(x["name"] for x in a.get("artists") or []))
+            for a in self.libraries.get("", {}).get("album", [])
+        }
+        return sorted(pairs, key=lambda p: (p[0].lower(), p[1].lower()))
+
+    def write_yaml(self, path: str, header: str, data: dict) -> None:
+        body = yaml.safe_dump(data, allow_unicode=True, default_flow_style=None, sort_keys=True, width=10000)
+        with self.write_lock:
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(header + body)
+            os.replace(tmp, path)
+        self.rebuild()
+
     def save_aliases(self, aliases: dict[str, list[str]]) -> None:
         clean = {k: sorted(set(v), key=str.lower) for k, v in aliases.items() if v}
-        body = yaml.safe_dump(clean, allow_unicode=True, default_flow_style=None, sort_keys=True, width=10000)
-        with self.write_lock:
-            tmp = self.aliases_file + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                f.write(ALIASES_HEADER + body)
-            os.replace(tmp, self.aliases_file)
-        self.rebuild()
+        self.write_yaml(self.aliases_file, ALIASES_HEADER, clean)
+
+    def set_album_aliases(self, artist: str, album: str, aliases: list[str]) -> dict:
+        """Replace one album's aliases (the editor saves a whole row)."""
+        if (album, artist) not in set(self.albums()):
+            return {"error": f"Nie ma albumu „{album}” ({artist}) w bibliotece."}
+        cleaned = sorted({a.strip() for a in aliases if norm(a) and norm(a) != norm(album)}, key=str.lower)
+        data = self.load_album_aliases()
+        albums = dict(data.get(artist) or {})
+        albums[album] = cleaned
+        data[artist] = {k: v for k, v in albums.items() if v}
+        self.write_yaml(self.album_aliases_file, ALBUM_ALIASES_HEADER, {k: v for k, v in data.items() if v})
+        return {"artist": artist, "album": album, "aliases": cleaned}
 
     def set_aliases(self, artist: str, aliases: list[str]) -> dict:
         """Replace one artist's aliases (the editor saves a whole row)."""
@@ -235,8 +300,23 @@ class Service:
         self.save_aliases(data)
         return {"artist": artist, "aliases": sorted(set(cleaned), key=str.lower)}
 
-    def add_alias(self, artist: str, alias: str) -> dict:
-        """Add one spelling; `artist` may itself be approximate (the voice agent sends it)."""
+    def add_album_alias(self, artist: str, album: str, alias: str) -> dict:
+        found = self.index.search(album, artist, "album", 1)
+        if not found or found[0]["score"] < self.min_score:
+            return {"error": f"Nie ma albumu „{album}” artysty {artist} w bibliotece."}
+        album, artist = found[0]["name"], found[0]["artist"]
+        current = (self.load_album_aliases().get(artist) or {}).get(album) or []
+        if norm(alias) in {norm(a) for a in current} or norm(alias) == norm(album):
+            return {"artist": artist, "album": album, "aliases": current, "message": f"Zapis „{alias}” już jest przy albumie {album}."}
+        result = self.set_album_aliases(artist, album, [*current, alias])
+        if "error" not in result:
+            result["message"] = f"Zapamiętane: „{alias}” to album {album}."
+        return result
+
+    def add_alias(self, artist: str, alias: str, album: str = "") -> dict:
+        """Add one spelling; `artist` (and `album`) may be approximate (the voice agent sends them)."""
+        if album:
+            return self.add_album_alias(artist, album, alias)
         names = self.artist_names()
         if artist not in names:
             found = self.index.find_artists(artist, 1)
@@ -325,7 +405,7 @@ class Service:
         }
 
     def search(self, query: str, artist: str, kind: str, limit: int, agent: str = "", person: str = "") -> dict:
-        if os.path.exists(self.aliases_file) and os.path.getmtime(self.aliases_file) != self.aliases_mtime:
+        if self.files_changed():
             self.rebuild()  # aliases.yaml edited by hand: pick it up without a restart
         user, owner = self.resolve_user(agent, person)
         with self.lock:
@@ -372,7 +452,13 @@ def make_handler(service: Service):
             if url.path == "/api/aliases":
                 return self.reply(
                     200,
-                    {"aliases": service.load_aliases(), "artists": service.artist_names(), "misses": service.misses()},
+                    {
+                        "aliases": service.load_aliases(),
+                        "artists": service.artist_names(),
+                        "album_aliases": service.load_album_aliases(),
+                        "albums": service.albums(),
+                        "misses": service.misses(),
+                    },
                 )
             if url.path == "/health":
                 return self.reply(200, {user or "all": len(ix.artists) for user, ix in service.indexes.items()})
@@ -399,12 +485,20 @@ def make_handler(service: Service):
                 body = json.loads(self.rfile.read(length) or b"{}")
             except ValueError:
                 return self.reply(400, {"error": "body must be JSON"})
-            if path == "/api/aliases":  # editor: replace one artist's aliases
-                result = service.set_aliases(str(body.get("artist", "")), [str(a) for a in body.get("aliases", [])])
+            if path == "/api/aliases":  # editor: replace one artist's or album's aliases
+                names = [str(a) for a in body.get("aliases", [])]
+                if body.get("album"):
+                    result = service.set_album_aliases(str(body.get("artist", "")), str(body["album"]), names)
+                else:
+                    result = service.set_aliases(str(body.get("artist", "")), names)
             elif path == "/api/misses/delete":
                 result = service.delete_miss(str(body.get("line", "")))
             elif path == "/aliases/add":  # voice agent: add one spelling
-                result = service.add_alias(str(body.get("artist", "")).strip(), str(body.get("alias", "")).strip())
+                result = service.add_alias(
+                    str(body.get("artist", "")).strip(),
+                    str(body.get("alias", "")).strip(),
+                    str(body.get("album") or "").strip(),
+                )
             else:
                 return self.reply(404, {"error": "not found"})
             self.reply(400 if "error" in result else 200, result)
