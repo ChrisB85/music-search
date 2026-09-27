@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import re
 import threading
 import time
@@ -129,12 +130,19 @@ class Service:
     def __init__(self, options: dict):
         self.min_score = float(options.get("min_score", 75))
         self.refresh_hours = float(options.get("refresh_hours", 6))
+        # person entity -> Music Assistant user; each user sees only their own libraries.
+        self.users = {u["person"]: u["ma_user"] for u in options.get("users", [])}
         self.aliases_file = os.path.join(CONFIG_DIR, "aliases.yaml")
         self.misses_file = os.path.join(CONFIG_DIR, "misses.log")
-        self.library: dict[str, list[dict]] = {}
+        # Keyed by MA user; "" = every library (no username passed to Music Assistant).
+        self.libraries: dict[str, dict[str, list[dict]]] = {}
+        self.indexes: dict[str, Index] = {"": Index({}, {})}
         self.aliases_mtime = 0.0
-        self.index = Index({}, {})
         self.lock = threading.Lock()
+
+    @property
+    def index(self) -> Index:
+        return self.indexes[""]
 
     def ha(self, method: str, path: str, body: dict | None = None):
         req = urllib.request.Request(
@@ -155,32 +163,77 @@ class Service:
 
     def refresh(self) -> None:
         entry = self.ha("GET", "/config/config_entries/entry?domain=music_assistant")[0]["entry_id"]
-        library = {}
-        for kind in TYPES:
-            data = {"config_entry_id": entry, "media_type": kind, "limit": 1000000}
-            library[kind] = self.ha("POST", "/services/music_assistant/get_library?return_response", data)[
-                "service_response"
-            ]["items"]
-        self.library = library
+        libraries = {}
+        for user in ["", *self.users.values()]:
+            library = {}
+            for kind in TYPES:
+                data = {"config_entry_id": entry, "media_type": kind, "limit": 1000000}
+                if user:
+                    data["username"] = user
+                library[kind] = self.ha("POST", "/services/music_assistant/get_library?return_response", data)[
+                    "service_response"
+                ]["items"]
+            libraries[user] = library
+            log.info("Library loaded for %s: %s", user or "all users", {k: len(v) for k, v in library.items()})
+        self.libraries = libraries
         self.rebuild()
-        log.info("Library loaded: %s", {k: len(v) for k, v in library.items()})
 
     def rebuild(self) -> None:
-        index = Index(self.library, self.load_aliases())
+        aliases = self.load_aliases()
+        indexes = {user: Index(library, aliases) for user, library in self.libraries.items()}
         with self.lock:
-            self.index = index
+            self.indexes = indexes
 
-    def search(self, query: str, artist: str, kind: str, limit: int) -> dict:
+    def resolve_user(self, agent: str = "", person: str = "") -> tuple[str, str]:
+        """(MA user, person entity) whose library to use; ("", "") = all libraries.
+
+        `person` names the library owner explicitly ("Aurelii" works: fuzzy on the person's name).
+        Otherwise `agent` (the conversation agent that heard the command) maps to a person through
+        the person_assistant sensors, which hold each person's pipeline and its conversation agent."""
+        if not self.users or not (agent or person):
+            return "", ""
+        states = self.ha("GET", "/states")
+        if person:
+            names = {}
+            for st in states:
+                if st["entity_id"] in self.users:
+                    names[norm(st["entity_id"].split(".", 1)[1])] = st["entity_id"]
+                    names[norm(st["attributes"].get("friendly_name", ""))] = st["entity_id"]
+            hit = process.extractOne(norm(person), list(names), scorer=name_score, processor=None)
+            if hit and hit[1] >= self.min_score:
+                return self.users[names[hit[0]]], names[hit[0]]
+            return "", ""
+        for st in states:
+            attrs = st["attributes"]
+            if attrs.get("conversation_engine") == agent and attrs.get("person") in self.users:
+                return self.users[attrs["person"]], attrs["person"]
+        return "", ""
+
+    def random(self, kind: str, agent: str, person: str) -> dict:
+        user, owner = self.resolve_user(agent, person)
+        items = self.libraries.get(user, {}).get(kind) or []
+        if not items:
+            return {"item": None, "user": user, "person": owner}
+        item = random.choice(items)
+        artist = ", ".join(a["name"] for a in item.get("artists") or [])
+        return {
+            "item": {"type": kind, "name": item["name"], "artist": artist, "uri": item["uri"]},
+            "user": user,
+            "person": owner,
+        }
+
+    def search(self, query: str, artist: str, kind: str, limit: int, agent: str = "", person: str = "") -> dict:
         if os.path.exists(self.aliases_file) and os.path.getmtime(self.aliases_file) != self.aliases_mtime:
             self.rebuild()  # aliases.yaml edited by hand: pick it up without a restart
+        user, owner = self.resolve_user(agent, person)
         with self.lock:
-            results = self.index.search(query, artist, kind, limit)
+            results = self.indexes.get(user, self.indexes[""]).search(query, artist, kind, limit)
         best = results[0] if results and results[0]["score"] >= self.min_score else None
         if best is None:
             with open(self.misses_file, "a", encoding="utf-8") as f:
                 top = f"{results[0]['name']} ({results[0]['score']})" if results else "-"
-                f.write(f"{time.strftime('%Y-%m-%d %H:%M')}\tq={query}\tartist={artist}\ttype={kind}\ttop={top}\n")
-        return {"best": best, "results": results}
+                f.write(f"{time.strftime('%Y-%m-%d %H:%M')}\tq={query}\tartist={artist}\ttype={kind}\tuser={user}\ttop={top}\n")
+        return {"best": best, "results": results, "user": user, "person": owner}
 
     def refresh_loop(self) -> None:
         while True:
@@ -204,14 +257,17 @@ def make_handler(service: Service):
         def do_GET(self):  # noqa: N802
             url = urlparse(self.path)
             args = {k: v[0] for k, v in parse_qs(url.query).items()}
-            if url.path == "/health":
-                return self.reply(200, {"artists": len(service.index.artists)})
-            if url.path != "/search" or not args.get("q"):
-                return self.reply(400, {"error": "use /search?q=...&artist=...&type=artist|album|track"})
+            agent, person = args.get("agent", ""), args.get("person", "")
             kind = args.get("type", "")
+            if url.path == "/health":
+                return self.reply(200, {user or "all": len(ix.artists) for user, ix in service.indexes.items()})
             if kind not in ("", *TYPES):
                 return self.reply(400, {"error": f"unknown type {kind}"})
-            self.reply(200, service.search(args["q"], args.get("artist", ""), kind, int(args.get("limit", 5))))
+            if url.path == "/random":
+                return self.reply(200, service.random(kind or "album", agent, person))
+            if url.path != "/search" or not args.get("q"):
+                return self.reply(400, {"error": "use /search?q=&artist=&type=&agent=&person= or /random?type=&agent=&person="})
+            self.reply(200, service.search(args["q"], args.get("artist", ""), kind, int(args.get("limit", 5)), agent, person))
 
         def do_POST(self):  # noqa: N802
             if urlparse(self.path).path != "/refresh":

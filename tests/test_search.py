@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "music_search"))
-from music_search import Index, norm  # noqa: E402
+from music_search import Index, Service, norm  # noqa: E402
 
 
 def artist(name, n):
@@ -64,6 +64,37 @@ class SearchTest(unittest.TestCase):
     def test_duplicate_tracks_collapsed(self):
         hits = self.ix.search("Paranoid", "Black Sabbath", "track", 5)
         self.assertEqual(sum(h["name"] == "Paranoid" for h in hits), 1)
+
+
+class FakeService(Service):
+    STATES = [
+        {"entity_id": "person.krzysiek", "attributes": {"friendly_name": "Krzysiek"}},
+        {"entity_id": "person.aurelia", "attributes": {"friendly_name": "Aurelia"}},
+        {"entity_id": "sensor.asystent_krzysiek", "attributes": {"person": "person.krzysiek", "conversation_engine": "conversation.alexa"}},
+        {"entity_id": "sensor.asystent_aurelia", "attributes": {"person": "person.aurelia", "conversation_engine": "conversation.nabu"}},
+        {"entity_id": "sensor.asystent_domyslny", "attributes": {"conversation_engine": "conversation.nabu"}},
+    ]
+
+    def ha(self, method, path, body=None):
+        return self.STATES
+
+
+class UserTest(unittest.TestCase):
+    def setUp(self):
+        self.svc = FakeService({"users": [{"person": "person.krzysiek", "ma_user": "krzysztof"},
+                                          {"person": "person.aurelia", "ma_user": "aurelia"}]})
+
+    def test_agent_maps_to_person(self):
+        self.assertEqual(self.svc.resolve_user("conversation.alexa"), ("krzysztof", "person.krzysiek"))
+        self.assertEqual(self.svc.resolve_user("conversation.nabu"), ("aurelia", "person.aurelia"))
+
+    def test_named_library_wins_over_agent(self):
+        self.assertEqual(self.svc.resolve_user("conversation.alexa", "Aurelii"), ("aurelia", "person.aurelia"))
+        self.assertEqual(self.svc.resolve_user("", "Krzyśka"), ("krzysztof", "person.krzysiek"))
+
+    def test_unknown_means_all_libraries(self):
+        self.assertEqual(self.svc.resolve_user("conversation.other"), ("", ""))
+        self.assertEqual(self.svc.resolve_user("", "Zbyszek"), ("", ""))
 
 
 if __name__ == "__main__":

@@ -5,15 +5,27 @@ Fuzzy search over the Music Assistant library, so voice commands survive speech-
 is a plain substring match.
 
 The library is read from Home Assistant (`music_assistant.get_library`) at start and every
-`refresh_hours`.
+`refresh_hours`, once for all libraries and once per Music Assistant user in `users`:
+
+```yaml
+users:
+  - person: person.krzysiek
+    ma_user: krzysztof
+```
 
 ## API
 
 Inside Home Assistant the app is reachable at `http://<hostname>:8098` (hostname shown on the app page).
 
-- `GET /search?q=<title or artist>&artist=<artist>&type=artist|album|track&limit=5` →
-  `{"best": {...} | null, "results": [{"type", "name", "artist", "uri", "score"}]}`.
-  `best` is the top result when its score reaches `min_score`. Pass `uri` to `music_assistant.play_media`.
+- `GET /search?q=<title or artist>&artist=<artist>&type=artist|album|track&limit=5&agent=&person=` →
+  `{"best": {...} | null, "results": [{"type", "name", "artist", "uri", "score"}], "user", "person"}`.
+  `best` is the top result when its score reaches `min_score`. Pass `uri` (and `user` as `username`)
+  to `music_assistant.play_media`.
+- `GET /random?type=album&agent=&person=` → `{"item": {...} | null, "user", "person"}`: a random item.
+- `agent` / `person` pick whose libraries to use: `person` names the owner (fuzzy, "Aurelii" works),
+  otherwise `agent` (the conversation agent that heard the command, e.g. `conversation.alexa`) maps to a
+  person through the [person_assistant](https://github.com/ChrisB85/person-assistant) sensors. The option
+  `users` maps persons to Music Assistant users. No match = all libraries.
 - `POST /refresh` — reload the library now.
 - `GET /health`
 

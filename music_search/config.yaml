@@ -1,5 +1,5 @@
 name: Music Search
-version: "0.1.1"
+version: "0.2.0"
 slug: music_search
 description: Fuzzy search over the Music Assistant library for voice commands
 url: https://github.com/ChrisB85/music-search
@@ -18,6 +18,10 @@ ports_description:
 options:
   min_score: 75
   refresh_hours: 6
+  users: []
 schema:
   min_score: int(0,100)
   refresh_hours: float
+  users:
+    - person: str
+      ma_user: str
