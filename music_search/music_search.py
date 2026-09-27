@@ -451,7 +451,11 @@ class Service:
             self.rebuild()  # aliases.yaml edited by hand: pick it up without a restart
         user, owner = self.resolve_user(agent, person)
         with self.lock:
-            results = self.indexes.get(user, self.indexes[""]).search(query, artist, kind, limit)
+            index = self.indexes.get(user, self.indexes[""])
+            results = index.search(query, artist, kind, limit)
+            if kind in ("album", "track") and not (results and results[0]["score"] >= self.min_score):
+                # The agent guesses album vs track; a title stored as an album spelling must still hit.
+                results = index.search(query, artist, "", limit)
         best = results[0] if results and results[0]["score"] >= self.min_score else None
         if best is None:
             with open(self.misses_file, "a", encoding="utf-8") as f:

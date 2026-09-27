@@ -159,6 +159,17 @@ class AliasEditTest(unittest.TestCase):
         self.assertEqual(self.svc.load_aliases()["Iron Maiden"], ["Ajron Mejden"])
 
 
+class WrongTypeTest(unittest.TestCase):
+    def test_album_found_when_agent_says_track(self):
+        svc = FakeService({})
+        svc.libraries = {"": LIBRARY}
+        svc.misses_file = os.path.join(tempfile.mkdtemp(), "misses.log")
+        svc.indexes = {"": Index(LIBRARY, {}, {"Marilyn Manson": {"Antichrist Superstar": ["Antykrajst"]}})}
+        svc.files_changed = lambda: False
+        best = svc.search("Antykrajst", "Marilyn Manson", "track", 3)["best"]
+        self.assertEqual((best["type"], best["name"]), ("album", "Antichrist Superstar"))
+
+
 class MissesTest(unittest.TestCase):
     def test_delete_miss(self):
         svc = FakeService({})
