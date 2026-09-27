@@ -42,6 +42,14 @@
   .del { display: inline-grid; place-items: center; width: 24px; height: 24px; padding: 0; border-radius: 50%;
          background: var(--card); color: var(--danger); border: 1px solid var(--line); font-size: 17px; line-height: 1; }
   .del:hover, .del:focus-visible { background: var(--danger); color: #fff; border-color: var(--danger); }
+  .mic { display: inline-grid; place-items: center; width: 30px; height: 30px; padding: 0; border-radius: 50%;
+         background: var(--card); color: var(--accent); border: 1px solid var(--line); }
+  .mic svg { width: 16px; height: 16px; fill: currentColor; }
+  .mic.rec { background: var(--danger); color: #fff; border-color: var(--danger); animation: pulse 1s infinite; }
+  .mic.busy { opacity: .5; cursor: wait; }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--danger) 25%, transparent); } }
+  .hint { color: var(--muted); font-size: 13px; margin: -12px 0 20px; }
+  .hint a { color: var(--accent); }
   button.ghost { background: none; color: var(--muted); border: 1px solid var(--line); }
   button.ghost:hover { color: var(--danger); border-color: var(--danger); }
   .aliases input { width: 170px; font-size: 14px; padding: 4px 8px; }
@@ -65,6 +73,8 @@
 <main>
   <h1>Zapisy fonetyczne</h1>
   <p class="lead">Jak rozpoznawanie mowy zapisuje nazwy artystów. Wyszukiwanie muzyki traktuje każdy zapis jak nazwę artysty. Zmiany działają od razu.</p>
+
+  <p class="hint" id="hint">Przycisk mikrofonu przy artyście nagrywa zapis przez to samo rozpoznawanie mowy, którego używa asystent. Mów tak jak do niego, np. „Puść Judas Priest” — polecenie zostanie obcięte, zostanie sama nazwa. Kliknij drugi raz, żeby zakończyć.</p>
 
   <section id="misses-section">
     <h2>Nietrafione zapytania</h2>
@@ -138,11 +148,15 @@ function row(artist) {
   }
   const input = el("input", { type: "text", placeholder: "dodaj zapis…" });
   input.setAttribute("aria-label", `Nowy zapis dla ${artist}`);
+  const mic = el("button", { type: "button", className: "mic", title: "Nagraj zapis głosem" });
+  mic.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>';
+  mic.setAttribute("aria-label", `Nagraj zapis dla ${artist}`);
+  mic.onclick = () => record(mic, input);
   input.onkeydown = async e => {
     if (e.key !== "Enter" || !input.value.trim()) return;
     if (await save(artist, [...list, input.value.trim()])) render(artist);
   };
-  box.append(input);
+  box.append(mic, input);
   return el("li", { className: "row" }, el("div", { className: "name", textContent: artist }), box);
 }
 
@@ -162,6 +176,60 @@ function render(focusArtist) {
     const idx = shown.indexOf(focusArtist);
     if (idx >= 0) ul.children[idx].querySelector("input").focus();
   }
+}
+
+// Microphone: 16 kHz mono PCM straight from Web Audio, sent to the app, which forwards it to HA STT.
+let recording = null;
+
+async function record(button, input) {
+  if (recording) { recording.stop(); return; }
+  if (!navigator.mediaDevices?.getUserMedia) {
+    toast("Mikrofon działa tylko przez HTTPS, np. https://ha.aqq1.pl.", true);
+    return;
+  }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+  } catch (e) {
+    toast(window.top !== window ? "Brak dostępu do mikrofonu w panelu — otwórz edytor w nowej karcie (link u góry)." : "Brak dostępu do mikrofonu.", true);
+    return;
+  }
+  const ctx = new AudioContext({ sampleRate: 16000 });
+  const source = ctx.createMediaStreamSource(stream);
+  const proc = ctx.createScriptProcessor(4096, 1, 1);
+  const chunks = [];
+  proc.onaudioprocess = e => chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+  source.connect(proc);
+  proc.connect(ctx.destination);
+  button.classList.add("rec");
+  const timer = setTimeout(() => recording && recording.stop(), 6000);
+  recording = {
+    stop: async () => {
+      clearTimeout(timer);
+      recording = null;
+      proc.disconnect(); source.disconnect();
+      stream.getTracks().forEach(t => t.stop());
+      await ctx.close();
+      button.classList.remove("rec");
+      button.classList.add("busy");
+      const length = chunks.reduce((n, c) => n + c.length, 0);
+      const pcm = new Int16Array(length);
+      let i = 0;
+      for (const c of chunks) for (const v of c) pcm[i++] = Math.max(-1, Math.min(1, v)) * 0x7fff;
+      try {
+        const r = await fetch("api/stt", { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: pcm.buffer });
+        const data = await r.json();
+        if (!r.ok) { toast(data.error || "Rozpoznawanie mowy nie powiodło się.", true); return; }
+        input.value = data.text;
+        input.focus();
+        toast(`Usłyszane: „${data.transcript}”. Enter zapisuje.`);
+      } catch {
+        toast("Rozpoznawanie mowy nie powiodło się.", true);
+      } finally {
+        button.classList.remove("busy");
+      }
+    },
+  };
 }
 
 function parseMiss(line) {
@@ -211,6 +279,11 @@ function renderMisses() {
 
 document.getElementById("filter").oninput = () => render();
 document.getElementById("only").onchange = () => render();
+if (window.top !== window) {
+  const hint = document.getElementById("hint");
+  const a = el("a", { href: location.href, target: "_blank", rel: "noopener", textContent: "Otwórz w nowej karcie" });
+  hint.append(" Jeśli przeglądarka blokuje mikrofon w panelu: ", a, ".");
+}
 load().catch(() => toast("Nie udało się wczytać danych.", true));
 </script>
 </body>

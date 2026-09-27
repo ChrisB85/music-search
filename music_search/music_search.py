@@ -48,6 +48,16 @@ def name_score(query: str, choice: str, **_kwargs) -> float:
     return max(fuzz.ratio(query, choice), fuzz.token_sort_ratio(query, choice), 0.95 * fuzz.token_set_ratio(query, choice))
 
 
+# The editor asks to speak the name the way one talks to the assistant ("Puść Judas Priest w pokoju"),
+# so the transcript keeps the inflection STT really produces; strip the command words around it.
+_COMMAND = re.compile(r"^(?:(?:puść|pusc|włącz|wlacz|zagraj|odtwórz|odtworz)\s+)?(.*?)(?:\s+w\s+pokoju)?$", re.I)
+
+
+def spoken_name(transcript: str) -> str:
+    text = transcript.strip().strip(".,!?;:\"'„”").strip()
+    return _COMMAND.match(text).group(1).strip() if text else ""
+
+
 def norm(text: str) -> str:
     """Lowercase, strip diacritics and punctuation, so STT output and tags compare equal."""
     text = unicodedata.normalize("NFKD", text.lower().translate(_EXTRA))
@@ -136,6 +146,8 @@ class Service:
     def __init__(self, options: dict):
         self.min_score = float(options.get("min_score", 75))
         self.refresh_hours = float(options.get("refresh_hours", 6))
+        self.stt_entity = options.get("stt_entity") or "stt.google_cloud"
+        self.stt_language = options.get("stt_language") or "pl-PL"
         # person entity -> Music Assistant user; each user sees only their own libraries.
         self.users = {u["person"]: u["ma_user"] for u in options.get("users", [])}
         self.aliases_file = os.path.join(CONFIG_DIR, "aliases.yaml")
@@ -244,6 +256,25 @@ class Service:
             return []
         with open(self.misses_file, encoding="utf-8") as f:
             return [line.rstrip("\n") for line in f.readlines()[-limit:]][::-1]
+
+    def transcribe(self, pcm: bytes) -> dict:
+        """Raw 16 kHz mono 16-bit PCM from the editor's microphone, through the same HA STT the
+        voice pipelines use, so the stored spelling is what speech-to-text really writes."""
+        req = urllib.request.Request(
+            f"{HA_URL}/stt/{self.stt_entity}",
+            method="POST",
+            data=pcm,
+            headers={
+                "Authorization": f"Bearer {HA_TOKEN}",
+                "X-Speech-Content": "format=wav; codec=pcm; sample_rate=16000; bit_rate=16; channel=1; "
+                f"language={self.stt_language}",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            result = json.load(resp)
+        if result.get("result") != "success" or not result.get("text"):
+            return {"error": "Nic nie rozpoznano."}
+        return {"text": spoken_name(result["text"]), "transcript": result["text"]}
 
     def delete_miss(self, line: str) -> dict:
         with self.write_lock:
@@ -359,6 +390,11 @@ def make_handler(service: Service):
                 service.refresh()
                 return self.reply(200, {"artists": len(service.index.artists)})
             length = int(self.headers.get("Content-Length") or 0)
+            if path == "/api/stt":
+                if not 0 < length <= 16000 * 2 * 15:  # at most 15 s of audio
+                    return self.reply(400, {"error": "Nagranie puste albo za długie."})
+                result = service.transcribe(self.rfile.read(length))
+                return self.reply(400 if "error" in result else 200, result)
             try:
                 body = json.loads(self.rfile.read(length) or b"{}")
             except ValueError:

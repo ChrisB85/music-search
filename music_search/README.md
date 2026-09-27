@@ -29,13 +29,18 @@ Inside Home Assistant the app is reachable at `http://<hostname>:8098` (hostname
 - `POST /aliases/add` `{"artist", "alias"}` — add one spelling (for the voice agent); `artist` may be
   approximate. Rejects unknown artists and spellings that are another artist's name.
 - `GET /api/aliases`, `POST /api/aliases` `{"artist", "aliases": [...]}` — used by the editor.
+- `POST /api/stt` (raw 16 kHz mono 16-bit PCM) → `{"text", "transcript"}` — used by the editor.
 - `POST /refresh` — reload the library now.
 - `GET /health`
 
 ## Editor
 
 The app adds a **Zapisy fonetyczne** panel to the sidebar: every artist with their spellings, plus recent
-unmatched queries with a one-click "add this spelling to artist".
+unmatched queries with a one-click "add this spelling to artist". The microphone button next to each
+artist records a spelling through Home Assistant's own STT (`stt_entity`, `stt_language`), so it is
+exactly what the voice pipeline would write; say it like a command ("Puść Judas Priest") and the
+command words are stripped. The browser allows the microphone only over HTTPS; if the sidebar panel
+blocks it, open the editor in a new tab (link in the hint).
 
 ## Files in `/addon_configs/<prefix>_music_search/`
 

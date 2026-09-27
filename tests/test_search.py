@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "music_search"))
-from music_search import Index, Service, norm  # noqa: E402
+from music_search import Index, Service, norm, spoken_name  # noqa: E402
 
 
 def artist(name, n):
@@ -36,6 +36,11 @@ class SearchTest(unittest.TestCase):
 
     def test_norm(self):
         self.assertEqual(norm("  Motörhead & Łódź! "), "motorhead lodz")
+
+    def test_spoken_name_strips_command(self):
+        self.assertEqual(spoken_name("Puść Judas Priest w pokoju."), "Judas Priest")
+        self.assertEqual(spoken_name("Metalikę"), "Metalikę")
+        self.assertEqual(spoken_name("włącz Dżudas Prista"), "Dżudas Prista")
 
     def test_inflected_artist(self):
         self.assertEqual(self.best("Marlina Mansona")["name"], "Marilyn Manson")
