@@ -125,6 +125,12 @@ class AliasEditTest(unittest.TestCase):
         self.assertEqual(result["artist"], "Black Sabbath")
         self.assertEqual(self.svc.index.search("Blek Sabat", "", "artist")[0]["score"], 100.0)
 
+    def test_random_album_of_artist(self):
+        for _ in range(5):
+            hit = self.svc.random("album", "", "", "Marlina Mansona")["item"]
+            self.assertEqual(hit["name"], "Antichrist Superstar")
+        self.assertIsNone(self.svc.random("album", "", "", "Zenek Martyniuk")["item"])
+
     def test_alias_of_another_artist_rejected(self):
         self.assertIn("error", self.svc.set_aliases("Metallica", ["Iron Maiden"]))
 

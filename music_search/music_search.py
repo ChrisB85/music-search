@@ -433,9 +433,14 @@ class Service:
                 return self.users[attrs["person"]], attrs["person"]
         return "", ""
 
-    def random(self, kind: str, agent: str, person: str) -> dict:
+    def random(self, kind: str, agent: str, person: str, artist: str = "") -> dict:
         user, owner = self.resolve_user(agent, person)
         items = self.libraries.get(user, {}).get(kind) or []
+        if artist:  # "losowy album Marilyna Mansona": only that artist's items
+            with self.lock:
+                index = self.indexes.get(user, self.indexes[""])
+                names = {norm(a["name"]) for a, s in index.find_artists(artist, 3) if s >= self.min_score}
+            items = [i for i in items if any(norm(a["name"]) in names for a in i.get("artists") or [])]
         if not items:
             return {"item": None, "user": user, "person": owner}
         item = random.choice(items)
@@ -512,9 +517,9 @@ def make_handler(service: Service):
             if kind not in ("", *TYPES):
                 return self.reply(400, {"error": f"unknown type {kind}"})
             if url.path == "/random":
-                return self.reply(200, service.random(kind or "album", agent, person))
+                return self.reply(200, service.random(kind or "album", agent, person, args.get("artist", "")))
             if url.path != "/search" or not args.get("q"):
-                return self.reply(400, {"error": "use /search?q=&artist=&type=&agent=&person= or /random?type=&agent=&person="})
+                return self.reply(400, {"error": "use /search?q=&artist=&type=&agent=&person= or /random?type=&artist=&agent=&person="})
             self.reply(200, service.search(args["q"], args.get("artist", ""), kind, int(args.get("limit", 5)), agent, person))
 
         def do_POST(self):  # noqa: N802
