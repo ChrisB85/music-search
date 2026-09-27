@@ -1,0 +1,23 @@
+name: Music Search
+version: "0.1.0"
+slug: music_search
+description: Fuzzy search over the Music Assistant library for voice commands
+url: https://github.com/ChrisB85/music-search
+arch:
+  - amd64
+startup: application
+boot: auto
+init: false
+homeassistant_api: true
+map:
+  - addon_config:rw
+ports:
+  8098/tcp: null
+ports_description:
+  8098/tcp: Search API (not needed by Home Assistant, only for access from outside)
+options:
+  min_score: 75
+  refresh_hours: 6
+schema:
+  min_score: int(0,100)
+  refresh_hours: float
