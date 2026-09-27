@@ -161,7 +161,7 @@ function row(artist) {
     if (e.key !== "Enter" || !input.value.trim()) return;
     if (await save(artist, [...list, input.value.trim()])) render(artist);
   };
-  box.append(mic, input);
+  box.prepend(mic, input);
   return el("li", { className: "row" }, el("div", { className: "name", textContent: artist }), box);
 }
 
