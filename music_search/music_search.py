@@ -520,8 +520,13 @@ def make_handler(service: Service):
         def do_POST(self):  # noqa: N802
             path = urlparse(self.path).path
             if path == "/refresh":
-                service.refresh()
-                return self.reply(200, {"artists": len(service.index.artists)})
+                try:
+                    service.refresh()
+                except Exception as err:  # noqa: BLE001 - report to the editor, keep the old index
+                    log.exception("Library refresh failed")
+                    return self.reply(502, {"error": f"Nie udało się pobrać biblioteki: {err}"})
+                lib = service.libraries.get("", {})
+                return self.reply(200, {k: len(lib.get(k, [])) for k in TYPES})
             length = int(self.headers.get("Content-Length") or 0)
             if path == "/api/stt":
                 if not 0 < length <= 16000 * 2 * 15:  # at most 15 s of audio

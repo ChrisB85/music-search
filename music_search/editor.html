@@ -18,6 +18,8 @@
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
   main { max-width: 960px; margin: 0 auto; padding: 20px 16px 64px; }
+  .head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
+  .head h1 { margin: 0; }
   h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
   h2 { font-size: 16px; font-weight: 600; margin: 0 0 10px; }
   p.lead { margin: 0 0 20px; color: var(--muted); }
@@ -76,7 +78,10 @@
 </head>
 <body>
 <main>
-  <h1>Zapisy fonetyczne</h1>
+  <div class="head">
+    <h1>Zapisy fonetyczne</h1>
+    <button type="button" class="ghost" id="refresh" title="Pobierz bibliotekę z Music Assistant od nowa (np. po synchronizacji)">Odśwież bibliotekę</button>
+  </div>
   <p class="lead">Jak rozpoznawanie mowy zapisuje nazwy artystów i tytuły albumów. Wyszukiwanie muzyki traktuje każdy zapis jak oryginalną nazwę. Zmiany działają od razu.</p>
 
   <p class="hint" id="hint">Przycisk mikrofonu nagrywa zapis przez to samo rozpoznawanie mowy, którego używa asystent. Mów tak jak do niego, np. „Puść Judas Priest” albo „Puść album Paranoid” (sam tytuł, bez artysty) — polecenie zostanie obcięte, a sama nazwa zapisze się od razu. Kliknij drugi raz, żeby zakończyć. Zły zapis usuniesz krzyżykiem. Gdy rozpoznanie da dokładnie oryginalną nazwę, zapis nie jest potrzebny — pozycja dostaje znacznik „✓ rozpoznawane”.</p>
@@ -359,6 +364,23 @@ function renderMisses() {
   }));
 }
 
+document.getElementById("refresh").onclick = async e => {
+  const b = e.currentTarget;
+  b.disabled = true;
+  b.textContent = "Odświeżam…";
+  try {
+    const r = await fetch("refresh", { method: "POST" });
+    const data = await r.json();
+    if (!r.ok) { toast(data.error || "Nie udało się odświeżyć.", true); return; }
+    await load();
+    toast(`Biblioteka odświeżona: ${data.artist} artystów, ${data.album} albumów, ${data.track} utworów.`);
+  } catch {
+    toast("Nie udało się odświeżyć.", true);
+  } finally {
+    b.disabled = false;
+    b.textContent = "Odśwież bibliotekę";
+  }
+};
 document.getElementById("filter").oninput = () => render();
 document.getElementById("only").onchange = () => render();
 if (window.top !== window) {
