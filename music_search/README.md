@@ -35,7 +35,7 @@ Inside Home Assistant the app is reachable at `http://<hostname>:8098` (hostname
 
 ## Editor
 
-The app adds a **Zapisy fonetyczne** panel to the sidebar: every artist with their spellings, plus recent
+The app adds a **Music Search** panel to the sidebar: every artist with their spellings, plus recent
 unmatched queries with a one-click "add this spelling to artist". The microphone button next to each
 artist records a spelling through Home Assistant's own STT (`stt_entity`, `stt_language`), so it is
 exactly what the voice pipeline would write; say it like a command ("Puść Judas Priest") and the

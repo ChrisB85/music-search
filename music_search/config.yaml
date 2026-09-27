@@ -1,5 +1,5 @@
 name: Music Search
-version: "0.7.0"
+version: "0.7.1"
 slug: music_search
 description: Fuzzy search over the Music Assistant library for voice commands
 url: https://github.com/ChrisB85/music-search
@@ -12,7 +12,7 @@ homeassistant_api: true
 ingress: true
 ingress_port: 8098
 panel_icon: mdi:music-note
-panel_title: Zapisy fonetyczne
+panel_title: Music Search
 map:
   - addon_config:rw
 ports:
