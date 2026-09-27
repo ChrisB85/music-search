@@ -38,8 +38,12 @@
   li.row:first-child { border-top: 0; }
   .name { font-weight: 500; overflow-wrap: anywhere; }
   .aliases { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-  .chip { display: inline-flex; align-items: center; gap: 2px; background: var(--chip); color: var(--chip-text); border-radius: 999px; padding: 2px 4px 2px 10px; font-size: 14px; }
-  .chip button { background: none; color: inherit; padding: 0 6px; font-size: 16px; line-height: 1; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; background: var(--chip); color: var(--chip-text); border-radius: 999px; padding: 3px 3px 3px 12px; font-size: 14px; }
+  .del { display: inline-grid; place-items: center; width: 24px; height: 24px; padding: 0; border-radius: 50%;
+         background: var(--card); color: var(--danger); border: 1px solid var(--line); font-size: 17px; line-height: 1; }
+  .del:hover, .del:focus-visible { background: var(--danger); color: #fff; border-color: var(--danger); }
+  button.ghost { background: none; color: var(--muted); border: 1px solid var(--line); }
+  button.ghost:hover { color: var(--danger); border-color: var(--danger); }
   .aliases input { width: 170px; font-size: 14px; padding: 4px 8px; }
   .miss { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 9px 0; border-top: 1px solid var(--line); }
   .miss:first-child { border-top: 0; }
@@ -127,7 +131,7 @@ function row(artist) {
   const list = aliases[artist] || [];
   const box = el("div", { className: "aliases" });
   for (const a of list) {
-    const remove = el("button", { type: "button", title: "Usuń", textContent: "×" });
+    const remove = el("button", { type: "button", className: "del", title: "Usuń zapis", textContent: "×" });
     remove.setAttribute("aria-label", `Usuń zapis ${a}`);
     remove.onclick = async () => { if (await save(artist, list.filter(x => x !== a))) render(); };
     box.append(el("span", { className: "chip" }, a, remove));
@@ -166,6 +170,18 @@ function parseMiss(line) {
   return { when, ...f };
 }
 
+async function dropMiss(line, quiet) {
+  const r = await fetch("api/misses/delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ line }),
+  });
+  if (!r.ok) { toast("Nie udało się usunąć z listy.", true); return; }
+  misses = misses.filter(m => m !== line);
+  renderMisses();
+  if (!quiet) toast("Usunięto z listy.");
+}
+
 function renderMisses() {
   const box = document.getElementById("misses");
   if (!misses.length) { box.replaceChildren(el("div", { className: "empty", textContent: "Brak — wszystkie zapytania trafiły." })); return; }
@@ -177,12 +193,14 @@ function renderMisses() {
     input.setAttribute("aria-label", `Artysta dla zapisu ${heard}`);
     const top = (m.top || "").replace(/ \([\d.]+\)$/, "");
     if (artists.includes(top)) input.value = top;
-    const form = el("form", {}, input, el("button", { type: "submit", textContent: `Dodaj „${heard}”` }));
+    const dismiss = el("button", { type: "button", className: "ghost", textContent: "Usuń z listy" });
+    dismiss.onclick = () => dropMiss(line);
+    const form = el("form", {}, input, el("button", { type: "submit", textContent: `Dodaj „${heard}”` }), dismiss);
     form.onsubmit = async e => {
       e.preventDefault();
       const artist = input.value.trim();
       if (!artists.includes(artist)) { toast("Wybierz artystę z listy.", true); return; }
-      if (await save(artist, [...(aliases[artist] || []), heard])) render();
+      if (await save(artist, [...(aliases[artist] || []), heard])) { render(); dropMiss(line, true); }
     };
     const meta = [m.when, m.artist ? `tytuł: ${m.q}` : "", m.user ? `biblioteka: ${m.user}` : "", m.top && m.top !== "-" ? `najbliższy: ${m.top}` : ""]
       .filter(Boolean).join(" · ");

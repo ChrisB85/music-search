@@ -245,6 +245,16 @@ class Service:
         with open(self.misses_file, encoding="utf-8") as f:
             return [line.rstrip("\n") for line in f.readlines()[-limit:]][::-1]
 
+    def delete_miss(self, line: str) -> dict:
+        with self.write_lock:
+            lines = self.misses(limit=10**9)[::-1]
+            if line not in lines:
+                return {"error": "Nie ma takiego wpisu."}
+            lines.remove(line)
+            with open(self.misses_file, "w", encoding="utf-8") as f:
+                f.writelines(entry + "\n" for entry in lines)
+        return {"deleted": line}
+
     def resolve_user(self, agent: str = "", person: str = "") -> tuple[str, str]:
         """(MA user, person entity) whose library to use; ("", "") = all libraries.
 
@@ -355,6 +365,8 @@ def make_handler(service: Service):
                 return self.reply(400, {"error": "body must be JSON"})
             if path == "/api/aliases":  # editor: replace one artist's aliases
                 result = service.set_aliases(str(body.get("artist", "")), [str(a) for a in body.get("aliases", [])])
+            elif path == "/api/misses/delete":
+                result = service.delete_miss(str(body.get("line", "")))
             elif path == "/aliases/add":  # voice agent: add one spelling
                 result = service.add_alias(str(body.get("artist", "")).strip(), str(body.get("alias", "")).strip())
             else:

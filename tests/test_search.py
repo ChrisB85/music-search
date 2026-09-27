@@ -123,5 +123,16 @@ class AliasEditTest(unittest.TestCase):
         self.assertEqual(self.svc.load_aliases()["Iron Maiden"], ["Ajron Mejden"])
 
 
+class MissesTest(unittest.TestCase):
+    def test_delete_miss(self):
+        svc = FakeService({})
+        svc.misses_file = os.path.join(tempfile.mkdtemp(), "misses.log")
+        with open(svc.misses_file, "w", encoding="utf-8") as f:
+            f.write("a\tq=x\nb\tq=y\n")
+        svc.delete_miss("a\tq=x")
+        self.assertEqual(svc.misses(), ["b\tq=y"])
+        self.assertIn("error", svc.delete_miss("zzz"))
+
+
 if __name__ == "__main__":
     unittest.main()
