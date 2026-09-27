@@ -54,4 +54,7 @@ blocks it, open the editor in a new tab (link in the hint).
   Black Sabbath:
     Paranoid: [Paranojd]
   ```
+- `verified.yaml` — names speech-to-text already writes correctly. The editor marks them when a
+  recording returns the name itself, so they are not recorded again; filter "do sprawdzenia" shows
+  what is left.
 - `misses.log` — queries with no confident match; use it to add aliases.

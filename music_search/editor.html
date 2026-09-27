@@ -50,6 +50,8 @@
   @keyframes pulse { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--danger) 25%, transparent); } }
   .hint { color: var(--muted); font-size: 13px; margin: -12px 0 20px; }
   .hint a { color: var(--accent); }
+  .chip.ok { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); font-weight: 500; }
+  select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
   .tabs { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
   .tabs button { background: none; color: var(--muted); border-radius: 0; }
   .tabs button[aria-pressed="true"] { background: var(--accent); color: #fff; }
@@ -77,7 +79,7 @@
   <h1>Zapisy fonetyczne</h1>
   <p class="lead">Jak rozpoznawanie mowy zapisuje nazwy artystów i tytuły albumów. Wyszukiwanie muzyki traktuje każdy zapis jak oryginalną nazwę. Zmiany działają od razu.</p>
 
-  <p class="hint" id="hint">Przycisk mikrofonu nagrywa zapis przez to samo rozpoznawanie mowy, którego używa asystent. Mów tak jak do niego, np. „Puść Judas Priest” albo „Puść album Paranoid” (sam tytuł, bez artysty) — polecenie zostanie obcięte, a sama nazwa zapisze się od razu. Kliknij drugi raz, żeby zakończyć. Zły zapis usuniesz krzyżykiem.</p>
+  <p class="hint" id="hint">Przycisk mikrofonu nagrywa zapis przez to samo rozpoznawanie mowy, którego używa asystent. Mów tak jak do niego, np. „Puść Judas Priest” albo „Puść album Paranoid” (sam tytuł, bez artysty) — polecenie zostanie obcięte, a sama nazwa zapisze się od razu. Kliknij drugi raz, żeby zakończyć. Zły zapis usuniesz krzyżykiem. Gdy rozpoznanie da dokładnie oryginalną nazwę, zapis nie jest potrzebny — pozycja dostaje znacznik „✓ rozpoznawane”.</p>
 
   <section id="misses-section">
     <h2>Nietrafione zapytania</h2>
@@ -91,7 +93,12 @@
         <button type="button" data-mode="album" aria-pressed="false">Albumy</button>
       </div>
       <input type="search" id="filter" placeholder="Szukaj nazwy lub zapisu…" autocomplete="off">
-      <label class="toggle"><input type="checkbox" id="only"> tylko z zapisami</label>
+      <select id="only" aria-label="Pokaż">
+        <option value="all">wszystkie</option>
+        <option value="todo">do sprawdzenia</option>
+        <option value="aliases">z zapisami</option>
+        <option value="verified">rozpoznawane poprawnie</option>
+      </select>
       <span class="count" id="count"></span>
     </div>
     <ul id="list"></ul>
@@ -103,11 +110,13 @@
 
 <script>
 let aliases = {}, artists = [], albumAliases = {}, albums = [], misses = [], mode = "artist";
+let verified = { artists: [], albums: {} };
 
 const albumLabel = (album, artist) => `${album} — ${artist}`;
 const items = () => mode === "artist"
   ? artists.map(a => ({ artist: a, label: a }))
   : albums.map(([album, artist]) => ({ artist, album, label: albumLabel(album, artist) }));
+const isVerified = it => it.album ? (verified.albums[it.artist] || []).includes(it.album) : verified.artists.includes(it.artist);
 const listOf = it => it.album ? ((albumAliases[it.artist] || {})[it.album] || []) : (aliases[it.artist] || []);
 
 const norm = s => s.toLowerCase().replace(/ł/g, "l").normalize("NFKD").replace(/[̀-ͯ]/g, "")
@@ -129,6 +138,7 @@ async function load() {
   albumAliases = data.album_aliases || {};
   albums = data.albums || [];
   misses = data.misses || [];
+  verified = data.verified || verified;
   document.getElementById("artists").replaceChildren(...artists.map(a => new Option(a)));
   document.getElementById("albums").replaceChildren(...albums.map(([al, ar]) => new Option(albumLabel(al, ar))));
   render();
@@ -148,6 +158,27 @@ async function save(it, list) {
     if (data.aliases.length) byAlbum[it.album] = data.aliases; else delete byAlbum[it.album];
   } else if (data.aliases.length) aliases[it.artist] = data.aliases; else delete aliases[it.artist];
   toast("Zapisano: " + it.label);
+  return true;
+}
+
+async function setVerified(it, flag) {
+  const r = await fetch("api/verified", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ artist: it.artist, album: it.album || "", verified: flag }),
+  });
+  const data = await r.json();
+  if (!r.ok) { toast(data.error || "Nie udało się zapisać.", true); return false; }
+  const name = it.album || it.artist;
+  if (it.album) {
+    const list = new Set(verified.albums[it.artist] || []);
+    flag ? list.add(name) : list.delete(name);
+    verified.albums[it.artist] = [...list];
+  } else {
+    const list = new Set(verified.artists);
+    flag ? list.add(name) : list.delete(name);
+    verified.artists = [...list];
+  }
   return true;
 }
 
@@ -172,6 +203,10 @@ function row(it) {
   mic.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>';
   mic.setAttribute("aria-label", `Nagraj zapis dla ${artist}`);
   mic.onclick = () => record(mic, async (text, transcript) => {
+    if (norm(text) === norm(it.album || it.artist)) {
+      if (await setVerified(it, true)) { render(); toast(`Rozpoznane poprawnie: „${transcript}”. Zapis nie jest potrzebny.`); }
+      return;
+    }
     if (await save(it, [...listOf(it), text])) {
       render();
       toast(`Zapisano „${text}” przy ${artist} (usłyszane: „${transcript}”).`);
@@ -181,23 +216,32 @@ function row(it) {
     if (e.key !== "Enter" || !input.value.trim()) return;
     if (await save(it, [...list, input.value.trim()])) render(it.label);
   };
+  if (isVerified(it)) {
+    const unmark = el("button", { type: "button", className: "del", title: "Usuń znacznik", textContent: "×" });
+    unmark.setAttribute("aria-label", `Usuń znacznik rozpoznawania dla ${artist}`);
+    unmark.onclick = async () => { if (await setVerified(it, false)) render(); };
+    box.prepend(el("span", { className: "chip ok", title: "Rozpoznawanie mowy zapisuje tę nazwę poprawnie" }, "✓ rozpoznawane", unmark));
+  }
   box.prepend(mic, input);
   return el("li", { className: "row" }, el("div", { className: "name", textContent: artist }), box);
 }
 
 function render(focusLabel) {
   const q = norm(document.getElementById("filter").value);
-  const only = document.getElementById("only").checked;
+  const only = document.getElementById("only").value;
   const all = items();
   const shown = all.filter(it => {
     const list = listOf(it);
-    if (only && !list.length) return false;
+    if (only === "aliases" && !list.length) return false;
+    if (only === "verified" && !isVerified(it)) return false;
+    if (only === "todo" && (list.length || isVerified(it))) return false;
     return !q || norm(it.label).includes(q) || list.some(x => norm(x).includes(q));
   });
   const ul = document.getElementById("list");
   ul.replaceChildren(...(shown.length ? shown.map(row) : [el("li", { className: "empty", textContent: "Brak wyników." })]));
   const withAliases = all.filter(it => listOf(it).length).length;
-  document.getElementById("count").textContent = `${shown.length} z ${all.length} · z zapisami: ${withAliases}`;
+  const ok = all.filter(isVerified).length;
+  document.getElementById("count").textContent = `${shown.length} z ${all.length} · z zapisami: ${withAliases} · ✓ ${ok}`;
   if (focusLabel) {
     const idx = shown.findIndex(it => it.label === focusLabel);
     if (idx >= 0) ul.children[idx].querySelector("input[type=text]").focus();

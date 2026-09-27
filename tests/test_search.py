@@ -133,6 +133,15 @@ class AliasEditTest(unittest.TestCase):
         hits = self.svc.index.search("Antichrist Superstar", "Marilyn Manson", "album", 5)
         self.assertEqual(sum(h["name"] == "Antichrist Superstar" for h in hits), 1)
 
+    def test_verified_marks(self):
+        self.svc.verified_file = os.path.join(os.path.dirname(self.svc.aliases_file), "verified.yaml")
+        self.svc.set_verified("Metallica", "", True)
+        self.svc.set_verified("Black Sabbath", "Paranoid", True)
+        self.assertEqual(self.svc.load_verified(), {"artists": ["Metallica"], "albums": {"Black Sabbath": ["Paranoid"]}})
+        self.svc.set_verified("Black Sabbath", "Paranoid", False)
+        self.assertEqual(self.svc.load_verified()["albums"], {})
+        self.assertIn("error", self.svc.set_verified("Nikt", "", True))
+
     def test_unknown_album_rejected(self):
         self.assertIn("error", self.svc.set_album_aliases("Metallica", "Nie Ma Takiego", ["x"]))
 

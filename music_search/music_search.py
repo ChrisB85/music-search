@@ -30,6 +30,10 @@ PORT = int(os.environ.get("PORT", "8098"))
 
 TYPES = ("artist", "album", "track")
 EDITOR_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "editor.html")
+VERIFIED_HEADER = """\
+# Names that speech-to-text already writes correctly (checked by voice in the editor), so they need no
+# phonetic spelling: artists as a list, albums per artist.
+"""
 ALBUM_ALIASES_HEADER = """\
 # Phonetic spellings of album titles, per artist then album (names exactly as in the library).
 # Edited by the app's editor panel and by the voice agent; hand edits apply without a restart.
@@ -181,6 +185,7 @@ class Service:
         self.users = {u["person"]: u["ma_user"] for u in options.get("users", [])}
         self.aliases_file = os.path.join(CONFIG_DIR, "aliases.yaml")
         self.album_aliases_file = os.path.join(CONFIG_DIR, "album_aliases.yaml")
+        self.verified_file = os.path.join(CONFIG_DIR, "verified.yaml")
         self.misses_file = os.path.join(CONFIG_DIR, "misses.log")
         # Keyed by MA user; "" = every library (no username passed to Music Assistant).
         self.libraries: dict[str, dict[str, list[dict]]] = {}
@@ -356,6 +361,33 @@ class Service:
             return {"error": "Nic nie rozpoznano."}
         return {"text": spoken_name(result["text"]), "transcript": result["text"]}
 
+    def load_verified(self) -> dict:
+        data = self.load_yaml(self.verified_file)
+        return {"artists": data.get("artists") or [], "albums": data.get("albums") or {}}
+
+    def set_verified(self, artist: str, album: str, verified: bool) -> dict:
+        """Mark a name as recognized correctly by voice (the editor does it when STT returns the name itself)."""
+        if album:
+            if (album, artist) not in set(self.albums()):
+                return {"error": f"Nie ma albumu „{album}” ({artist}) w bibliotece."}
+        elif artist not in self.artist_names():
+            return {"error": f"Nie ma artysty „{artist}” w bibliotece."}
+        data = self.load_verified()
+        target = set(data["albums"].get(artist) or []) if album else set(data["artists"])
+        (target.add if verified else target.discard)(album or artist)
+        if album:
+            data["albums"][artist] = sorted(target, key=str.lower)
+            data["albums"] = {k: v for k, v in data["albums"].items() if v}
+        else:
+            data["artists"] = sorted(target, key=str.lower)
+        body = yaml.safe_dump(data, allow_unicode=True, default_flow_style=False, sort_keys=True, width=10000)
+        with self.write_lock:
+            tmp = self.verified_file + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(VERIFIED_HEADER + body)
+            os.replace(tmp, self.verified_file)
+        return {"artist": artist, "album": album, "verified": verified}
+
     def delete_miss(self, line: str) -> dict:
         with self.write_lock:
             lines = self.misses(limit=10**9)[::-1]
@@ -458,6 +490,7 @@ def make_handler(service: Service):
                         "album_aliases": service.load_album_aliases(),
                         "albums": service.albums(),
                         "misses": service.misses(),
+                        "verified": service.load_verified(),
                     },
                 )
             if url.path == "/health":
@@ -491,6 +524,10 @@ def make_handler(service: Service):
                     result = service.set_album_aliases(str(body.get("artist", "")), str(body["album"]), names)
                 else:
                     result = service.set_aliases(str(body.get("artist", "")), names)
+            elif path == "/api/verified":
+                result = service.set_verified(
+                    str(body.get("artist", "")), str(body.get("album") or ""), bool(body.get("verified", True))
+                )
             elif path == "/api/misses/delete":
                 result = service.delete_miss(str(body.get("line", "")))
             elif path == "/aliases/add":  # voice agent: add one spelling
