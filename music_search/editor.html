@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zapisy fonetyczne</title>
+<style>
+  :root {
+    --bg: #fafafa; --card: #fff; --text: #1c1c1c; --muted: #6b6b6b; --line: #e3e3e3;
+    --accent: #03a9f4; --chip: #e8f4fb; --chip-text: #035a82; --danger: #c62828; --ok: #2e7d32;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111; --card: #1c1c1c; --text: #e4e4e4; --muted: #9a9a9a; --line: #2e2e2e;
+      --accent: #29b6f6; --chip: #10354a; --chip-text: #bfe6fa; --danger: #ef5350; --ok: #66bb6a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 960px; margin: 0 auto; padding: 20px 16px 64px; }
+  h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
+  h2 { font-size: 16px; font-weight: 600; margin: 0 0 10px; }
+  p.lead { margin: 0 0 20px; color: var(--muted); }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 12px; }
+  input[type=search], input[type=text] {
+    font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line);
+    border-radius: 8px; padding: 7px 10px; min-width: 0;
+  }
+  input[type=search] { flex: 1 1 240px; }
+  input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  label.toggle { display: flex; gap: 6px; align-items: center; color: var(--muted); cursor: pointer; }
+  button { font: inherit; border: 0; border-radius: 8px; padding: 7px 12px; background: var(--accent); color: #fff; cursor: pointer; }
+  button.link { background: none; color: var(--accent); padding: 0 4px; }
+  .count { color: var(--muted); font-size: 13px; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li.row { display: grid; grid-template-columns: minmax(140px, 220px) 1fr; gap: 10px; padding: 9px 0; border-top: 1px solid var(--line); align-items: center; }
+  li.row:first-child { border-top: 0; }
+  .name { font-weight: 500; overflow-wrap: anywhere; }
+  .aliases { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .chip { display: inline-flex; align-items: center; gap: 2px; background: var(--chip); color: var(--chip-text); border-radius: 999px; padding: 2px 4px 2px 10px; font-size: 14px; }
+  .chip button { background: none; color: inherit; padding: 0 6px; font-size: 16px; line-height: 1; }
+  .aliases input { width: 170px; font-size: 14px; padding: 4px 8px; }
+  .miss { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 9px 0; border-top: 1px solid var(--line); }
+  .miss:first-child { border-top: 0; }
+  .miss .q { font-weight: 500; }
+  .miss .meta { color: var(--muted); font-size: 13px; }
+  .miss form { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+  .miss form input { width: 190px; }
+  .empty { color: var(--muted); padding: 8px 0; }
+  #toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 9px 16px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: calc(100% - 32px); }
+  #toast.show { opacity: 1; }
+  #toast.error { background: var(--danger); color: #fff; }
+  @media (max-width: 600px) {
+    li.row, .miss { grid-template-columns: 1fr; }
+    .miss form { justify-content: flex-start; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Zapisy fonetyczne</h1>
+  <p class="lead">Jak rozpoznawanie mowy zapisuje nazwy artystów. Wyszukiwanie muzyki traktuje każdy zapis jak nazwę artysty. Zmiany działają od razu.</p>
+
+  <section id="misses-section">
+    <h2>Nietrafione zapytania</h2>
+    <div id="misses"></div>
+  </section>
+
+  <section>
+    <div class="bar">
+      <input type="search" id="filter" placeholder="Szukaj artysty lub zapisu…" autocomplete="off">
+      <label class="toggle"><input type="checkbox" id="only"> tylko z zapisami</label>
+      <span class="count" id="count"></span>
+    </div>
+    <ul id="list"></ul>
+  </section>
+</main>
+<datalist id="artists"></datalist>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script>
+let aliases = {}, artists = [], misses = [];
+
+const norm = s => s.toLowerCase().replace(/ł/g, "l").normalize("NFKD").replace(/[̀-ͯ]/g, "")
+  .replace(/[^a-z0-9]+/g, " ").trim();
+
+function toast(text, error) {
+  const t = document.getElementById("toast");
+  t.textContent = text;
+  t.className = "show" + (error ? " error" : "");
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => (t.className = ""), 2600);
+}
+
+async function load() {
+  const r = await fetch("api/aliases");
+  const data = await r.json();
+  aliases = data.aliases || {};
+  artists = data.artists || [];
+  misses = data.misses || [];
+  document.getElementById("artists").replaceChildren(...artists.map(a => new Option(a)));
+  render();
+  renderMisses();
+}
+
+async function save(artist, list) {
+  const r = await fetch("api/aliases", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ artist, aliases: list }),
+  });
+  const data = await r.json();
+  if (!r.ok) { toast(data.error || "Nie udało się zapisać.", true); return false; }
+  if (data.aliases.length) aliases[artist] = data.aliases; else delete aliases[artist];
+  toast("Zapisano: " + artist);
+  return true;
+}
+
+function el(tag, props = {}, ...children) {
+  const e = Object.assign(document.createElement(tag), props);
+  e.append(...children);
+  return e;
+}
+
+function row(artist) {
+  const list = aliases[artist] || [];
+  const box = el("div", { className: "aliases" });
+  for (const a of list) {
+    const remove = el("button", { type: "button", title: "Usuń", textContent: "×" });
+    remove.setAttribute("aria-label", `Usuń zapis ${a}`);
+    remove.onclick = async () => { if (await save(artist, list.filter(x => x !== a))) render(); };
+    box.append(el("span", { className: "chip" }, a, remove));
+  }
+  const input = el("input", { type: "text", placeholder: "dodaj zapis…" });
+  input.setAttribute("aria-label", `Nowy zapis dla ${artist}`);
+  input.onkeydown = async e => {
+    if (e.key !== "Enter" || !input.value.trim()) return;
+    if (await save(artist, [...list, input.value.trim()])) render(artist);
+  };
+  box.append(input);
+  return el("li", { className: "row" }, el("div", { className: "name", textContent: artist }), box);
+}
+
+function render(focusArtist) {
+  const q = norm(document.getElementById("filter").value);
+  const only = document.getElementById("only").checked;
+  const shown = artists.filter(a => {
+    const list = aliases[a] || [];
+    if (only && !list.length) return false;
+    return !q || norm(a).includes(q) || list.some(x => norm(x).includes(q));
+  });
+  const ul = document.getElementById("list");
+  ul.replaceChildren(...(shown.length ? shown.map(row) : [el("li", { className: "empty", textContent: "Brak wyników." })]));
+  const withAliases = artists.filter(a => (aliases[a] || []).length).length;
+  document.getElementById("count").textContent = `${shown.length} z ${artists.length} · z zapisami: ${withAliases}`;
+  if (focusArtist) {
+    const idx = shown.indexOf(focusArtist);
+    if (idx >= 0) ul.children[idx].querySelector("input").focus();
+  }
+}
+
+function parseMiss(line) {
+  const [when, ...fields] = line.split("\t");
+  const f = Object.fromEntries(fields.map(x => [x.slice(0, x.indexOf("=")), x.slice(x.indexOf("=") + 1)]));
+  return { when, ...f };
+}
+
+function renderMisses() {
+  const box = document.getElementById("misses");
+  if (!misses.length) { box.replaceChildren(el("div", { className: "empty", textContent: "Brak — wszystkie zapytania trafiły." })); return; }
+  box.replaceChildren(...misses.slice(0, 30).map(line => {
+    const m = parseMiss(line);
+    const heard = m.artist || m.q;
+    const input = el("input", { type: "text", placeholder: "artysta…" });
+    input.setAttribute("list", "artists");
+    input.setAttribute("aria-label", `Artysta dla zapisu ${heard}`);
+    const top = (m.top || "").replace(/ \([\d.]+\)$/, "");
+    if (artists.includes(top)) input.value = top;
+    const form = el("form", {}, input, el("button", { type: "submit", textContent: `Dodaj „${heard}”` }));
+    form.onsubmit = async e => {
+      e.preventDefault();
+      const artist = input.value.trim();
+      if (!artists.includes(artist)) { toast("Wybierz artystę z listy.", true); return; }
+      if (await save(artist, [...(aliases[artist] || []), heard])) render();
+    };
+    const meta = [m.when, m.artist ? `tytuł: ${m.q}` : "", m.user ? `biblioteka: ${m.user}` : "", m.top && m.top !== "-" ? `najbliższy: ${m.top}` : ""]
+      .filter(Boolean).join(" · ");
+    return el("div", { className: "miss" },
+      el("div", {}, el("div", { className: "q", textContent: heard }), el("div", { className: "meta", textContent: meta })), form);
+  }));
+}
+
+document.getElementById("filter").oninput = () => render();
+document.getElementById("only").onchange = () => render();
+load().catch(() => toast("Nie udało się wczytać danych.", true));
+</script>
+</body>
+</html>

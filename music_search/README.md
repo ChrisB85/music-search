@@ -26,8 +26,16 @@ Inside Home Assistant the app is reachable at `http://<hostname>:8098` (hostname
   otherwise `agent` (the conversation agent that heard the command, e.g. `conversation.alexa`) maps to a
   person through the [person_assistant](https://github.com/ChrisB85/person-assistant) sensors. The option
   `users` maps persons to Music Assistant users. No match = all libraries.
+- `POST /aliases/add` `{"artist", "alias"}` — add one spelling (for the voice agent); `artist` may be
+  approximate. Rejects unknown artists and spellings that are another artist's name.
+- `GET /api/aliases`, `POST /api/aliases` `{"artist", "aliases": [...]}` — used by the editor.
 - `POST /refresh` — reload the library now.
 - `GET /health`
+
+## Editor
+
+The app adds a **Zapisy fonetyczne** panel to the sidebar: every artist with their spellings, plus recent
+unmatched queries with a one-click "add this spelling to artist".
 
 ## Files in `/addon_configs/<prefix>_music_search/`
 

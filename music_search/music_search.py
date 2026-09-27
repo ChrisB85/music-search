@@ -29,6 +29,12 @@ OPTIONS_FILE = os.environ.get("OPTIONS_FILE", "/data/options.json")
 PORT = int(os.environ.get("PORT", "8098"))
 
 TYPES = ("artist", "album", "track")
+EDITOR_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "editor.html")
+ALIASES_HEADER = """\
+# Phonetic spellings per Music Assistant artist, as Polish speech-to-text may write them.
+# Key = artist name exactly as in the library. Edited by the app's editor panel and by the
+# voice agent; hand edits apply without a restart. Unmatched queries land in misses.log.
+"""
 # Characters NFKD does not decompose.
 _EXTRA = str.maketrans({"ł": "l", "ø": "o", "æ": "ae", "ß": "ss", "đ": "d"})
 
@@ -139,6 +145,7 @@ class Service:
         self.indexes: dict[str, Index] = {"": Index({}, {})}
         self.aliases_mtime = 0.0
         self.lock = threading.Lock()
+        self.write_lock = threading.Lock()
 
     @property
     def index(self) -> Index:
@@ -183,6 +190,60 @@ class Service:
         indexes = {user: Index(library, aliases) for user, library in self.libraries.items()}
         with self.lock:
             self.indexes = indexes
+
+    def artist_names(self) -> list[str]:
+        return sorted({a["name"] for a in self.libraries.get("", {}).get("artist", [])}, key=str.lower)
+
+    def save_aliases(self, aliases: dict[str, list[str]]) -> None:
+        clean = {k: sorted(set(v), key=str.lower) for k, v in aliases.items() if v}
+        body = yaml.safe_dump(clean, allow_unicode=True, default_flow_style=None, sort_keys=True, width=10000)
+        with self.write_lock:
+            tmp = self.aliases_file + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(ALIASES_HEADER + body)
+            os.replace(tmp, self.aliases_file)
+        self.rebuild()
+
+    def set_aliases(self, artist: str, aliases: list[str]) -> dict:
+        """Replace one artist's aliases (the editor saves a whole row)."""
+        if artist not in self.artist_names():
+            return {"error": f"Nie ma artysty „{artist}” w bibliotece."}
+        own = norm(artist)
+        others = {norm(a): a for a in self.artist_names() if norm(a) != own}
+        cleaned = []
+        for alias in aliases:
+            key = norm(alias)
+            if not key or key == own:
+                continue
+            if key in others:
+                return {"error": f"„{alias}” to nazwa innego artysty: {others[key]}."}
+            cleaned.append(alias.strip())
+        data = self.load_aliases()
+        data[artist] = cleaned
+        self.save_aliases(data)
+        return {"artist": artist, "aliases": sorted(set(cleaned), key=str.lower)}
+
+    def add_alias(self, artist: str, alias: str) -> dict:
+        """Add one spelling; `artist` may itself be approximate (the voice agent sends it)."""
+        names = self.artist_names()
+        if artist not in names:
+            found = self.index.find_artists(artist, 1)
+            if not found or found[0][1] < self.min_score:
+                return {"error": f"Nie ma artysty „{artist}” w bibliotece."}
+            artist = found[0][0]["name"]
+        current = self.load_aliases().get(artist) or []
+        if norm(alias) in {norm(a) for a in current} or norm(alias) == norm(artist):
+            return {"artist": artist, "aliases": current, "message": f"Zapis „{alias}” już jest przy {artist}."}
+        result = self.set_aliases(artist, [*current, alias])
+        if "error" not in result:
+            result["message"] = f"Zapamiętane: „{alias}” to {artist}."
+        return result
+
+    def misses(self, limit: int = 100) -> list[str]:
+        if not os.path.exists(self.misses_file):
+            return []
+        with open(self.misses_file, encoding="utf-8") as f:
+            return [line.rstrip("\n") for line in f.readlines()[-limit:]][::-1]
 
     def resolve_user(self, agent: str = "", person: str = "") -> tuple[str, str]:
         """(MA user, person entity) whose library to use; ("", "") = all libraries.
@@ -259,6 +320,19 @@ def make_handler(service: Service):
             args = {k: v[0] for k, v in parse_qs(url.query).items()}
             agent, person = args.get("agent", ""), args.get("person", "")
             kind = args.get("type", "")
+            if url.path in ("/", "/editor"):
+                with open(EDITOR_FILE, "rb") as f:
+                    data = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                return self.wfile.write(data)
+            if url.path == "/api/aliases":
+                return self.reply(
+                    200,
+                    {"aliases": service.load_aliases(), "artists": service.artist_names(), "misses": service.misses()},
+                )
             if url.path == "/health":
                 return self.reply(200, {user or "all": len(ix.artists) for user, ix in service.indexes.items()})
             if kind not in ("", *TYPES):
@@ -270,10 +344,22 @@ def make_handler(service: Service):
             self.reply(200, service.search(args["q"], args.get("artist", ""), kind, int(args.get("limit", 5)), agent, person))
 
         def do_POST(self):  # noqa: N802
-            if urlparse(self.path).path != "/refresh":
+            path = urlparse(self.path).path
+            if path == "/refresh":
+                service.refresh()
+                return self.reply(200, {"artists": len(service.index.artists)})
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                body = json.loads(self.rfile.read(length) or b"{}")
+            except ValueError:
+                return self.reply(400, {"error": "body must be JSON"})
+            if path == "/api/aliases":  # editor: replace one artist's aliases
+                result = service.set_aliases(str(body.get("artist", "")), [str(a) for a in body.get("aliases", [])])
+            elif path == "/aliases/add":  # voice agent: add one spelling
+                result = service.add_alias(str(body.get("artist", "")).strip(), str(body.get("alias", "")).strip())
+            else:
                 return self.reply(404, {"error": "not found"})
-            service.refresh()
-            self.reply(200, {"artists": len(service.index.artists)})
+            self.reply(400 if "error" in result else 200, result)
 
         def log_message(self, fmt, *args):
             log.debug(fmt, *args)

@@ -1,4 +1,6 @@
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -95,6 +97,30 @@ class UserTest(unittest.TestCase):
     def test_unknown_means_all_libraries(self):
         self.assertEqual(self.svc.resolve_user("conversation.other"), ("", ""))
         self.assertEqual(self.svc.resolve_user("", "Zbyszek"), ("", ""))
+
+
+class AliasEditTest(unittest.TestCase):
+    def setUp(self):
+        self.svc = FakeService({})
+        self.svc.aliases_file = os.path.join(tempfile.mkdtemp(), "aliases.yaml")
+        self.svc.libraries = {"": LIBRARY}
+        self.svc.rebuild()
+
+    def test_add_alias_with_approximate_artist(self):
+        result = self.svc.add_alias("Black Sabat", "Blek Sabat")
+        self.assertEqual(result["artist"], "Black Sabbath")
+        self.assertEqual(self.svc.index.search("Blek Sabat", "", "artist")[0]["score"], 100.0)
+
+    def test_alias_of_another_artist_rejected(self):
+        self.assertIn("error", self.svc.set_aliases("Metallica", ["Iron Maiden"]))
+
+    def test_unknown_artist_rejected(self):
+        self.assertIn("error", self.svc.add_alias("Zenek Martyniuk", "Zenek"))
+
+    def test_duplicate_alias_not_added_twice(self):
+        self.svc.add_alias("Iron Maiden", "Ajron Mejden")
+        self.svc.add_alias("Iron Maiden", "ajron mejden")
+        self.assertEqual(self.svc.load_aliases()["Iron Maiden"], ["Ajron Mejden"])
 
 
 if __name__ == "__main__":
