@@ -1,5 +1,5 @@
 name: Music Search
-version: "0.7.2"
+version: "0.7.3"
 slug: music_search
 description: Fuzzy search over the Music Assistant library for voice commands
 url: https://github.com/ChrisB85/music-search

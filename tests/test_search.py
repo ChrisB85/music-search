@@ -131,6 +131,15 @@ class AliasEditTest(unittest.TestCase):
             self.assertEqual(hit["name"], "Antichrist Superstar")
         self.assertIsNone(self.svc.random("album", "", "", "Zenek Martyniuk")["item"])
 
+    def test_random_other_album(self):
+        self.svc.libraries = {"": dict(LIBRARY, album=LIBRARY["album"] + [item("album", "Mechanical Animals", "Marilyn Manson", 3)])}
+        self.svc.rebuild()
+        for _ in range(5):
+            hit = self.svc.random("album", "", "", "Marilyn Manson", "Antichrist Superstar")["item"]
+            self.assertEqual(hit["name"], "Mechanical Animals")
+        # the only album of an artist is still played rather than nothing
+        self.assertEqual(self.svc.random("album", "", "", "Black Sabbath", "Paranoid")["item"]["name"], "Paranoid")
+
     def test_alias_of_another_artist_rejected(self):
         self.assertIn("error", self.svc.set_aliases("Metallica", ["Iron Maiden"]))
 
