@@ -337,15 +337,29 @@ function renderMisses() {
   box.replaceChildren(...misses.slice(0, 30).map(line => {
     const m = parseMiss(line);
     // With an artist the query was a title: offer it as an album spelling, otherwise as an artist spelling.
-    const isTitle = !!m.artist, heard = m.q;
-    const input = el("input", { type: "text", placeholder: isTitle ? "album…" : "artysta…" });
-    input.setAttribute("list", isTitle ? "albums" : "artists");
-    input.setAttribute("aria-label", `${isTitle ? "Album" : "Artysta"} dla zapisu ${heard}`);
+    // A title row can still be linked to an artist (the select flips the target).
+    const heard = m.q;
+    let isTitle = !!m.artist;
+    const input = el("input", { type: "text" });
+    const target = el("select", {},
+      el("option", { value: "album", textContent: "album" }), el("option", { value: "artist", textContent: "artysta" }));
+    const retarget = () => {
+      isTitle = target.value === "album";
+      input.placeholder = isTitle ? "album…" : "artysta…";
+      input.setAttribute("list", isTitle ? "albums" : "artists");
+      input.setAttribute("aria-label", `${isTitle ? "Album" : "Artysta"} dla zapisu ${heard}`);
+      input.value = "";
+    };
+    target.setAttribute("aria-label", `Powiąż zapis ${heard} z`);
+    target.value = isTitle ? "album" : "artist";
+    target.onchange = retarget;
+    retarget();
     const top = (m.top || "").replace(/ \([\d.]+\)$/, "");
     if (!isTitle && artists.includes(top)) input.value = top;
+    target.hidden = !m.artist;
     const dismiss = el("button", { type: "button", className: "ghost", textContent: "Usuń z listy" });
     dismiss.onclick = () => dropMiss(line);
-    const form = el("form", {}, input, el("button", { type: "submit", textContent: `Dodaj „${heard}”` }), dismiss);
+    const form = el("form", {}, target, input, el("button", { type: "submit", textContent: `Dodaj „${heard}”` }), dismiss);
     form.onsubmit = async e => {
       e.preventDefault();
       const value = input.value.trim();
