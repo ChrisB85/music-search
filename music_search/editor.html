@@ -60,19 +60,22 @@
   button.ghost { background: none; color: var(--muted); border: 1px solid var(--line); }
   button.ghost:hover { color: var(--danger); border-color: var(--danger); }
   .aliases input { width: 170px; font-size: 14px; padding: 4px 8px; }
-  .miss { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 9px 0; border-top: 1px solid var(--line); }
-  .miss:first-child { border-top: 0; }
-  .miss .q { font-weight: 500; }
+  .miss { display: grid; gap: 8px; padding: 12px 0; border-top: 1px solid var(--line); }
+  .miss:first-child { border-top: 0; padding-top: 2px; }
+  .miss .q { font-weight: 600; font-size: 16px; overflow-wrap: anywhere; }
   .miss .meta { color: var(--muted); font-size: 13px; }
-  .miss form { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
-  .miss form input { width: 190px; }
+  .miss form { display: flex; gap: 8px; align-items: stretch; }
+  .miss form input { flex: 1 1 160px; min-width: 0; }
+  .miss .tabs button { padding: 6px 12px; }
+  .miss .tabs button[aria-pressed="false"]:hover { color: var(--text); }
   .empty { color: var(--muted); padding: 8px 0; }
   #toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 9px 16px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: calc(100% - 32px); }
   #toast.show { opacity: 1; }
   #toast.error { background: var(--danger); color: #fff; }
   @media (max-width: 600px) {
-    li.row, .miss { grid-template-columns: 1fr; }
-    .miss form { justify-content: flex-start; }
+    li.row { grid-template-columns: 1fr; }
+    .miss form { flex-wrap: wrap; }
+    .miss form input { flex-basis: 100%; order: 3; }
   }
 </style>
 </head>
@@ -337,29 +340,32 @@ function renderMisses() {
   box.replaceChildren(...misses.slice(0, 30).map(line => {
     const m = parseMiss(line);
     // With an artist the query was a title: offer it as an album spelling, otherwise as an artist spelling.
-    // A title row can still be linked to an artist (the select flips the target).
+    // Any miss can be linked to an artist or an album; a title query (has an artist) starts on album.
     const heard = m.q;
     let isTitle = !!m.artist;
     const input = el("input", { type: "text" });
-    const target = el("select", {},
-      el("option", { value: "album", textContent: "album" }), el("option", { value: "artist", textContent: "artysta" }));
-    const retarget = () => {
-      isTitle = target.value === "album";
+    const tabs = el("div", { className: "tabs", role: "group" });
+    tabs.setAttribute("aria-label", `Powiąż zapis ${heard} z`);
+    const retarget = (toAlbum, keep) => {
+      isTitle = toAlbum;
+      for (const t of tabs.children) t.setAttribute("aria-pressed", String((t.dataset.kind === "album") === isTitle));
       input.placeholder = isTitle ? "album…" : "artysta…";
       input.setAttribute("list", isTitle ? "albums" : "artists");
       input.setAttribute("aria-label", `${isTitle ? "Album" : "Artysta"} dla zapisu ${heard}`);
-      input.value = "";
+      if (!keep) input.value = "";
     };
-    target.setAttribute("aria-label", `Powiąż zapis ${heard} z`);
-    target.value = isTitle ? "album" : "artist";
-    target.onchange = retarget;
-    retarget();
+    for (const [kind, label] of [["artist", "Artysta"], ["album", "Album"]]) {
+      const t = el("button", { type: "button", textContent: label });
+      t.dataset.kind = kind;
+      t.onclick = () => retarget(kind === "album");
+      tabs.append(t);
+    }
+    retarget(isTitle, true);
     const top = (m.top || "").replace(/ \([\d.]+\)$/, "");
     if (!isTitle && artists.includes(top)) input.value = top;
-    target.hidden = !m.artist;
     const dismiss = el("button", { type: "button", className: "ghost", textContent: "Usuń z listy" });
     dismiss.onclick = () => dropMiss(line);
-    const form = el("form", {}, target, input, el("button", { type: "submit", textContent: `Dodaj „${heard}”` }), dismiss);
+    const form = el("form", {}, tabs, input, el("button", { type: "submit", textContent: "Dodaj zapis" }), dismiss);
     form.onsubmit = async e => {
       e.preventDefault();
       const value = input.value.trim();
