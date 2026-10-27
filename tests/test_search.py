@@ -198,3 +198,35 @@ class MissesTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NotLoadedTest(unittest.TestCase):
+    """Music Assistant down when the app starts: no library yet, which is not the same as an empty one."""
+
+    def setUp(self):
+        self.svc = FakeService({"refresh_hours": 6, "retry_minutes": 2})
+        self.tmp = tempfile.TemporaryDirectory()
+        self.svc.aliases_file = os.path.join(self.tmp.name, "aliases.yaml")
+        self.svc.misses_file = os.path.join(self.tmp.name, "misses.log")
+        with open(self.svc.aliases_file, "w", encoding="utf-8") as f:
+            f.write("{}\n")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_search_before_load_reports_not_loaded(self):
+        result = self.svc.search("Paranoid", "", "album", 5)  # aliases file unseen: rebuild runs first
+        self.assertIn("error", result)
+        self.assertFalse(os.path.exists(self.svc.misses_file))
+
+    def test_random_before_load_reports_not_loaded(self):
+        self.assertIn("error", self.svc.random("album", "", ""))
+
+    def test_loaded_empty_library_is_no_item(self):
+        self.svc.libraries = {"": {"artist": [], "album": [], "track": []}}
+        self.svc.rebuild()
+        self.assertEqual(self.svc.random("album", "", ""), {"item": None, "user": "", "person": ""})
+
+    def test_failed_refresh_retries_soon(self):
+        self.assertEqual(self.svc.next_refresh(ok=False), 2 * 60)
+        self.assertEqual(self.svc.next_refresh(ok=True), 6 * 3600)

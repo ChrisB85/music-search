@@ -5,7 +5,9 @@ Fuzzy search over the Music Assistant library, so voice commands survive speech-
 is a plain substring match.
 
 The library is read from Home Assistant (`music_assistant.get_library`) at start and every
-`refresh_hours`, once for all libraries and once per Music Assistant user in `users`:
+`refresh_hours`, once for all libraries and once per Music Assistant user in `users`. A failed load
+(Music Assistant restarting or not up yet at boot) is retried after `retry_minutes`; until the first load
+succeeds `/search` and `/random` answer `503 {"error"}`, so a caller can tell "not loaded" from "not found".
 
 ```yaml
 users:

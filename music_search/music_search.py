@@ -189,6 +189,8 @@ class Service:
     def __init__(self, options: dict):
         self.min_score = float(options.get("min_score", 75))
         self.refresh_hours = float(options.get("refresh_hours", 6))
+        # After a failed load (Music Assistant restarting or not up yet at boot): retry this soon, not after refresh_hours.
+        self.retry_minutes = float(options.get("retry_minutes", 1))
         self.stt_entity = options.get("stt_entity") or "stt.google_cloud"
         self.stt_language = options.get("stt_language") or "pl-PL"
         # person entity -> Music Assistant user; each user sees only their own libraries.
@@ -256,7 +258,8 @@ class Service:
 
     def rebuild(self) -> None:
         aliases, album_aliases = self.load_aliases(), self.load_album_aliases()
-        indexes = {user: Index(library, aliases, album_aliases) for user, library in self.libraries.items()}
+        indexes = {"": Index({}, {})}  # "" is the fallback for an unknown user, also before the first load
+        indexes.update({user: Index(library, aliases, album_aliases) for user, library in self.libraries.items()})
         with self.lock:
             self.indexes = indexes
 
@@ -433,7 +436,13 @@ class Service:
                 return self.users[attrs["person"]], attrs["person"]
         return "", ""
 
+    def not_loaded(self) -> dict | None:
+        """No library yet differs from an empty one: the caller must not say "not found"."""
+        return None if self.libraries else {"error": "Biblioteka muzyki nie jest jeszcze wczytana."}
+
     def random(self, kind: str, agent: str, person: str, artist: str = "", exclude: str = "") -> dict:
+        if error := self.not_loaded():
+            return error
         user, owner = self.resolve_user(agent, person)
         items = self.libraries.get(user, {}).get(kind) or []
         if artist:  # "losowy album Marilyna Mansona": only that artist's items
@@ -454,6 +463,8 @@ class Service:
         }
 
     def search(self, query: str, artist: str, kind: str, limit: int, agent: str = "", person: str = "") -> dict:
+        if error := self.not_loaded():
+            return error
         if self.files_changed():
             self.rebuild()  # aliases.yaml edited by hand: pick it up without a restart
         user, owner = self.resolve_user(agent, person)
@@ -470,13 +481,19 @@ class Service:
                 f.write(f"{time.strftime('%Y-%m-%d %H:%M')}\tq={query}\tartist={artist}\ttype={kind}\tuser={user}\ttop={top}\n")
         return {"best": best, "results": results, "user": user, "person": owner}
 
+    def next_refresh(self, ok: bool) -> float:
+        """Seconds until the next library load."""
+        return self.refresh_hours * 3600 if ok else self.retry_minutes * 60
+
     def refresh_loop(self) -> None:
         while True:
             try:
                 self.refresh()
-            except Exception:  # noqa: BLE001 - keep serving the old index, retry next round
+                ok = True
+            except Exception:  # noqa: BLE001 - keep serving the old index, retry soon
                 log.exception("Library refresh failed")
-            time.sleep(self.refresh_hours * 3600)
+                ok = False
+            time.sleep(self.next_refresh(ok))
 
 
 def make_handler(service: Service):
@@ -519,10 +536,12 @@ def make_handler(service: Service):
             if kind not in ("", *TYPES):
                 return self.reply(400, {"error": f"unknown type {kind}"})
             if url.path == "/random":
-                return self.reply(200, service.random(kind or "album", agent, person, args.get("artist", ""), args.get("exclude", "")))
+                result = service.random(kind or "album", agent, person, args.get("artist", ""), args.get("exclude", ""))
+                return self.reply(503 if "error" in result else 200, result)
             if url.path != "/search" or not args.get("q"):
                 return self.reply(400, {"error": "use /search?q=&artist=&type=&agent=&person= or /random?type=&artist=&exclude=&agent=&person="})
-            self.reply(200, service.search(args["q"], args.get("artist", ""), kind, int(args.get("limit", 5)), agent, person))
+            result = service.search(args["q"], args.get("artist", ""), kind, int(args.get("limit", 5)), agent, person)
+            self.reply(503 if "error" in result else 200, result)
 
         def do_POST(self):  # noqa: N802
             path = urlparse(self.path).path
